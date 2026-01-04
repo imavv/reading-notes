@@ -49,12 +49,16 @@ const deleteBook = async (id) => {
 function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [books, setBooks] = useState([]);
-  const [currentView, setCurrentView] = useState('list'); // 'list', 'book'
+  const [currentView, setCurrentView] = useState('list'); // 'list', 'book', 'voiceDetail'
   const [currentBook, setCurrentBook] = useState(null);
   const [showAddBook, setShowAddBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState('');
   const [newBookAuthor, setNewBookAuthor] = useState('');
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'type'
+  
+  // Voice detail view
+  const [currentVoiceEntry, setCurrentVoiceEntry] = useState(null);
+  const [isEditingVoiceDetail, setIsEditingVoiceDetail] = useState(false);
   
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -68,7 +72,6 @@ function App() {
   const [newTypeText, setNewTypeText] = useState('');
   
   // Editing states
-  const [editingVoiceId, setEditingVoiceId] = useState(null);
   const [editingVoiceText, setEditingVoiceText] = useState('');
   const [editingTypeId, setEditingTypeId] = useState(null);
   const [editingTypeText, setEditingTypeText] = useState('');
@@ -133,6 +136,81 @@ function App() {
     setActiveTab('voice');
   };
 
+  const openVoiceDetail = (entry) => {
+    setCurrentVoiceEntry(entry);
+    setEditingVoiceText(entry.rawText);
+    setIsEditingVoiceDetail(false);
+    setCurrentView('voiceDetail');
+  };
+
+  const saveVoiceDetail = async () => {
+    if (!editingVoiceText.trim()) return;
+    
+    const updated = {
+      voiceEntries: currentBook.voiceEntries.map(e => 
+        e.id === currentVoiceEntry.id 
+          ? { ...e, rawText: editingVoiceText, timestamp: Date.now() }
+          : e
+      )
+    };
+    
+    await updateCurrentBook(updated);
+    setCurrentVoiceEntry({ ...currentVoiceEntry, rawText: editingVoiceText, timestamp: Date.now() });
+    setIsEditingVoiceDetail(false);
+  };
+
+  const deleteVoiceDetail = async () => {
+    if (!window.confirm('Delete this voice note?')) return;
+    
+    const updated = {
+      voiceEntries: currentBook.voiceEntries.filter(e => e.id !== currentVoiceEntry.id)
+    };
+    await updateCurrentBook(updated);
+    setCurrentView('book');
+    setCurrentVoiceEntry(null);
+  };
+
+  const exportData = async () => {
+    const allBooks = await getAllBooks();
+    
+    const exportData = {
+      exportDate: new Date().toISOString(),
+      totalBooks: allBooks.length,
+      books: allBooks.map(book => ({
+        id: book.id,
+        title: book.title,
+        author: book.author,
+        createdAt: book.id, // ID is timestamp of creation
+        lastEdited: book.lastEdited,
+        lastEditedFormatted: formatDate(book.lastEdited),
+        voiceEntries: book.voiceEntries.map(entry => ({
+          id: entry.id,
+          text: entry.rawText,
+          createdAt: entry.timestamp,
+          createdAtFormatted: formatDate(entry.timestamp)
+        })),
+        typeEntries: book.typeEntries.map(entry => ({
+          id: entry.id,
+          text: entry.text,
+          createdAt: entry.timestamp,
+          createdAtFormatted: formatDate(entry.timestamp)
+        }))
+      }))
+    };
+    
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `reading-notes-backup-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    alert('Data exported successfully!');
+  };
+
   const updateCurrentBook = async (updates) => {
     const updated = { ...currentBook, ...updates, lastEdited: Date.now() };
     await saveBook(updated);
@@ -140,58 +218,133 @@ function App() {
     await loadBooks();
   };
 
-  const startRecording = () => {
+  const startRecording = async () => {
+    // ADDED: Check if speech recognition is supported
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       alert('Speech recognition not supported in this browser. Please use Chrome or Safari.');
       return;
     }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    let finalTranscript = '';
-
-    recognition.onresult = (event) => {
-      let interimTranscript = '';
+    try {
+      // ADDED: Request microphone permission FIRST using Navigator API
+      // This is critical for iOS Safari - it needs explicit permission before speech recognition
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript + ' ';
-        } else {
-          interimTranscript += transcript;
+      // ADDED: Immediately stop the stream (we just needed permission)
+      // We don't need to keep this stream active since SpeechRecognition handles audio
+      stream.getTracks().forEach(track => track.stop());
+      
+      // Now proceed with speech recognition
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const recognition = new SpeechRecognition();
+      
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+      recognition.maxAlternatives = 1;
+
+      let finalTranscript = '';
+      let isManualStop = false;
+
+      recognition.onstart = () => {
+        console.log('Recording started');
+        setIsRecording(true);
+      };
+
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+          } else {
+            interimTranscript += transcript;
+          }
         }
-      }
+        
+        setTranscript(finalTranscript + interimTranscript);
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        
+        if (event.error === 'no-speech') {
+          alert('No speech detected. Please try again and speak clearly.');
+        } else if (event.error === 'aborted') {
+          if (!isManualStop) {
+            alert('Recording was interrupted. Please try again.');
+          }
+        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          // ENHANCED: Better error message for iOS users
+          alert('Microphone access denied. Please:\n\n1. Go to iPhone Settings → Safari → Microphone → Allow\n2. Go to iPhone Settings → Privacy & Security → Speech Recognition → Enable Safari\n3. Refresh this page and try again');
+        } else {
+          alert(`Recording error: ${event.error}. Please try again.`);
+        }
+        
+        setIsRecording(false);
+      };
+
+      recognition.onend = () => {
+        console.log('Recording ended');
+        
+        if (isRecording && !isManualStop && recognitionRef.current) {
+          try {
+            recognition.start();
+          } catch (err) {
+            console.error('Failed to restart:', err);
+            setIsRecording(false);
+          }
+        } else {
+          setIsRecording(false);
+        }
+      };
+
+      recognitionRef.current = recognition;
       
-      setTranscript(finalTranscript + interimTranscript);
-    };
-
-    recognition.onerror = (event) => {
-      console.error('Speech recognition error:', event.error);
-      setIsRecording(false);
-    };
-
-    recognition.onend = () => {
-      setIsRecording(false);
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
-    setIsRecording(true);
-    setTranscript('');
+      recognitionRef.current.stopManually = () => {
+        isManualStop = true;
+        recognition.stop();
+      };
+      
+      // CHANGED: Start recognition synchronously (critical for iOS)
+      recognition.start();
+      setTranscript('');
+      
+    } catch (err) {
+      // ADDED: Handle microphone permission errors
+      console.error('Microphone access error:', err);
+      
+      if (err.name === 'NotAllowedError') {
+        alert('Microphone permission denied. Please:\n\n1. Tap the "AA" icon in Safari address bar\n2. Select "Website Settings"\n3. Enable Microphone\n4. Refresh page and try again');
+      } else if (err.name === 'NotFoundError') {
+        alert('No microphone found on this device.');
+      } else if (err.name === 'NotSupportedError') {
+        alert('Microphone access requires HTTPS. Please use the Vercel URL (https://...) instead of localhost.');
+      } else {
+        alert(`Could not access microphone: ${err.message}\n\nPlease check your device settings.`);
+      }
+    }
   };
 
   const stopRecording = () => {
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      setIsRecording(false);
-      if (transcript.trim()) {
-        setEditingTranscript(true);
-        setTempTranscript(transcript);
+      // CHANGED: Use the manual stop handler to prevent auto-restart
+      if (recognitionRef.current.stopManually) {
+        recognitionRef.current.stopManually();
+      } else {
+        recognitionRef.current.stop();
       }
+      
+      setIsRecording(false);
+      
+      // ADDED: Short delay before showing edit screen to ensure transcript is captured
+      setTimeout(() => {
+        if (transcript.trim()) {
+          setEditingTranscript(true);
+          setTempTranscript(transcript);
+        }
+      }, 300);
     }
   };
 
@@ -215,29 +368,17 @@ function App() {
   };
 
   const startEditVoice = (entry) => {
-    setEditingVoiceId(entry.id);
-    setEditingVoiceText(entry.rawText);
+    openVoiceDetail(entry);
+    setIsEditingVoiceDetail(true);
   };
 
   const saveEditVoice = async () => {
-    if (!editingVoiceText.trim()) return;
-    
-    const updated = {
-      voiceEntries: currentBook.voiceEntries.map(e => 
-        e.id === editingVoiceId 
-          ? { ...e, rawText: editingVoiceText, timestamp: Date.now() }
-          : e
-      )
-    };
-    
-    await updateCurrentBook(updated);
-    setEditingVoiceId(null);
-    setEditingVoiceText('');
+    await saveVoiceDetail();
   };
 
   const cancelEditVoice = () => {
-    setEditingVoiceId(null);
-    setEditingVoiceText('');
+    setEditingVoiceText(currentVoiceEntry.rawText);
+    setIsEditingVoiceDetail(false);
   };
 
   const deleteVoiceEntry = async (entryId) => {
@@ -362,6 +503,12 @@ function App() {
             <h1 className="text-3xl font-bold">Reading Notes</h1>
             <div className="flex gap-3">
               <button
+                onClick={exportData}
+                className={`px-4 py-2 rounded-lg border ${borderColor} flex items-center gap-2 hover:bg-opacity-80`}
+              >
+                Export Data
+              </button>
+              <button
                 onClick={() => setDarkMode(!darkMode)}
                 className={`p-3 rounded-full ${cardBg} border ${borderColor}`}
               >
@@ -452,6 +599,80 @@ function App() {
     );
   }
 
+  // Voice Detail View
+  if (currentView === 'voiceDetail') {
+    return (
+      <div className={`min-h-screen ${theme} transition-colors`}>
+        <div className="max-w-4xl mx-auto p-6">
+          {/* Header */}
+          <div className="flex items-center gap-4 mb-6">
+            <button
+              onClick={() => {
+                setCurrentView('book');
+                setCurrentVoiceEntry(null);
+              }}
+              className={`px-4 py-2 rounded-lg border ${borderColor}`}
+            >
+              ← Back
+            </button>
+            <div className="flex-1">
+              <h1 className="text-2xl font-bold">Voice Note</h1>
+              <p className="text-sm opacity-70">{formatDate(currentVoiceEntry.timestamp)}</p>
+            </div>
+            <button
+              onClick={deleteVoiceDetail}
+              className="p-2 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+            >
+              <Trash2 size={20} />
+            </button>
+          </div>
+
+          {/* Content */}
+          <div className={`${cardBg} border ${borderColor} rounded-lg p-6`}>
+            {isEditingVoiceDetail ? (
+              <div>
+                <textarea
+                  value={editingVoiceText}
+                  onChange={(e) => setEditingVoiceText(e.target.value)}
+                  className={`w-full ${inputBg} border ${borderColor} rounded-lg p-4 min-h-[300px] text-base leading-relaxed`}
+                  autoFocus
+                />
+                <div className="flex gap-3 mt-4">
+                  <button
+                    onClick={cancelEditVoice}
+                    className={`flex-1 px-4 py-3 rounded-lg border ${borderColor}`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={saveEditVoice}
+                    className={`flex-1 ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
+                  >
+                    <Save size={20} />
+                    Save Changes
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <p className="whitespace-pre-wrap text-base leading-relaxed mb-6">
+                  {currentVoiceEntry.rawText}
+                </p>
+                <button
+                  onClick={() => setIsEditingVoiceDetail(true)}
+                  className={`w-full ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
+                >
+                  <Edit2 size={20} />
+                  Edit Note
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Book View
   return (
     <div className={`min-h-screen ${theme} transition-colors`}>
@@ -502,56 +723,35 @@ function App() {
               {currentBook.voiceEntries.map(entry => (
                 <div 
                   key={entry.id} 
-                  className={`${cardBg} border ${borderColor} rounded-lg p-4 relative group cursor-pointer transition-all`}
-                  onClick={() => {
-                    if (editingVoiceId !== entry.id) {
-                      setEditingVoiceId(entry.id);
-                      setEditingVoiceText(entry.rawText);
-                    }
-                  }}
+                  className={`${cardBg} border ${borderColor} rounded-lg p-4 relative group cursor-pointer transition-all hover:shadow-md`}
+                  onClick={() => openVoiceDetail(entry)}
                 >
-                  {editingVoiceId === entry.id ? (
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <textarea
-                        value={editingVoiceText}
-                        onChange={(e) => setEditingVoiceText(e.target.value)}
-                        className={`w-full ${inputBg} border ${borderColor} rounded-lg p-3 mb-3 min-h-[120px]`}
-                        autoFocus
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          onClick={cancelEditVoice}
-                          className={`flex-1 px-3 py-2 rounded-lg border ${borderColor} text-sm`}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={saveEditVoice}
-                          className={`flex-1 ${buttonBg} text-white px-3 py-2 rounded-lg text-sm flex items-center justify-center gap-1`}
-                        >
-                          <Save size={16} />
-                          Save
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div 
-                        className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <button
-                          onClick={() => deleteVoiceEntry(entry.id)}
-                          className="p-2 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                      <p className="text-sm opacity-60 mb-2">{formatDate(entry.timestamp)}</p>
-                      <p className="whitespace-nowrap overflow-hidden text-ellipsis pr-20">{entry.rawText}</p>
-                      <p className="text-xs opacity-50 mt-1">Click to expand</p>
-                    </>
-                  )}
+                  <div 
+                    className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startEditVoice(entry);
+                      }}
+                      className="p-2 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
+                    >
+                      <Edit2 size={16} />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteVoiceEntry(entry.id);
+                      }}
+                      className="p-2 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                  <p className="text-sm opacity-60 mb-2">{formatDate(entry.timestamp)}</p>
+                  <p className="whitespace-nowrap overflow-hidden text-ellipsis pr-20">{entry.rawText}</p>
+                  <p className="text-xs opacity-50 mt-1">Click to view full note</p>
                 </div>
               ))}
               
