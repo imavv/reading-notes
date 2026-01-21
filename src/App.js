@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Plus, X, Search, Moon, Sun, Edit2, Check, Trash2, Save } from 'lucide-react';
+import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Sparkles, Loader2, Download } from 'lucide-react';
+import { initLLM, generateSummary, generateTitle, isModelLoaded, isModelLoading } from './llmService';
 
 // IndexedDB setup
 const DB_NAME = 'ReadingNotesDB';
@@ -66,6 +67,7 @@ function App() {
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [tempTranscript, setTempTranscript] = useState('');
   const recognitionRef = useRef(null);
+  const transcriptScrollRef = useRef(null);
   
   // Type mode states
   const [showAddType, setShowAddType] = useState(false);
@@ -76,6 +78,15 @@ function App() {
   const [editingTypeId, setEditingTypeId] = useState(null);
   const [editingTypeText, setEditingTypeText] = useState('');
 
+  // LLM states
+  const [llmProgress, setLlmProgress] = useState(0);
+  const [llmProgressText, setLlmProgressText] = useState('');
+  const [showLlmLoadingModal, setShowLlmLoadingModal] = useState(false);
+  const [showSummarizePrompt, setShowSummarizePrompt] = useState(false);
+  const [pendingVoiceEntry, setPendingVoiceEntry] = useState(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [voiceDetailTab, setVoiceDetailTab] = useState('raw'); // 'raw' or 'summary'
+
   useEffect(() => {
     loadBooks();
     const isDark = localStorage.getItem('darkMode') === 'true';
@@ -85,6 +96,13 @@ function App() {
   useEffect(() => {
     localStorage.setItem('darkMode', darkMode);
   }, [darkMode]);
+
+  // Auto-scroll transcript to bottom when new text arrives
+  useEffect(() => {
+    if (transcriptScrollRef.current) {
+      transcriptScrollRef.current.scrollTop = transcriptScrollRef.current.scrollHeight;
+    }
+  }, [transcript]);
 
   const loadBooks = async () => {
     const allBooks = await getAllBooks();
@@ -238,7 +256,7 @@ function App() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
       
-      recognition.continuous = false;
+      recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
       recognition.maxAlternatives = 1;
@@ -350,21 +368,27 @@ function App() {
 
   const saveVoiceEntry = async () => {
     if (!tempTranscript.trim()) return;
-    
+
     const entry = {
       id: Date.now().toString(),
       rawText: tempTranscript,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      summary: null,
+      title: null
     };
-    
+
     const updated = {
       voiceEntries: [entry, ...currentBook.voiceEntries]
     };
-    
+
     await updateCurrentBook(updated);
     setTranscript('');
     setTempTranscript('');
     setEditingTranscript(false);
+
+    // Show summarization prompt
+    setPendingVoiceEntry(entry);
+    setShowSummarizePrompt(true);
   };
 
   const startEditVoice = (entry) => {
@@ -461,12 +485,104 @@ function App() {
     window.open(`https://www.google.com/search?q=${encodeURIComponent(text)}`, '_blank');
   };
 
+  // LLM functions
+  const loadLLM = async () => {
+    if (isModelLoaded() || isModelLoading()) {
+      return isModelLoaded();
+    }
+
+    setShowLlmLoadingModal(true);
+    setLlmProgress(0);
+
+    try {
+      await initLLM((progress, text) => {
+        setLlmProgress(progress);
+        setLlmProgressText(text || '');
+      });
+      setShowLlmLoadingModal(false);
+      localStorage.setItem('llmModelDownloaded', 'true');
+      return true;
+    } catch (error) {
+      console.error('Failed to load LLM:', error);
+      setShowLlmLoadingModal(false);
+      alert('Failed to load AI model. Please try again.');
+      return false;
+    }
+  };
+
+  const summarizeEntry = async (entry) => {
+    if (!isModelLoaded()) {
+      const loaded = await loadLLM();
+      if (!loaded) return null;
+    }
+
+    setIsSummarizing(true);
+    try {
+      const [summary, title] = await Promise.all([
+        generateSummary(entry.rawText),
+        generateTitle(entry.rawText)
+      ]);
+
+      return { summary, title };
+    } catch (error) {
+      console.error('Failed to summarize:', error);
+      alert('Failed to generate summary. Please try again.');
+      return null;
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  const handleSummarizeAfterRecording = async (shouldSummarize) => {
+    if (!pendingVoiceEntry) return;
+
+    if (shouldSummarize) {
+      const result = await summarizeEntry(pendingVoiceEntry);
+      if (result) {
+        const updatedEntry = {
+          ...pendingVoiceEntry,
+          summary: result.summary,
+          title: result.title
+        };
+        const updated = {
+          voiceEntries: currentBook.voiceEntries.map(e =>
+            e.id === pendingVoiceEntry.id ? updatedEntry : e
+          )
+        };
+        await updateCurrentBook(updated);
+      }
+    }
+
+    setShowSummarizePrompt(false);
+    setPendingVoiceEntry(null);
+  };
+
+  const summarizeCurrentVoiceEntry = async () => {
+    if (!currentVoiceEntry) return;
+
+    const result = await summarizeEntry(currentVoiceEntry);
+    if (result) {
+      const updatedEntry = {
+        ...currentVoiceEntry,
+        summary: result.summary,
+        title: result.title
+      };
+      const updated = {
+        voiceEntries: currentBook.voiceEntries.map(e =>
+          e.id === currentVoiceEntry.id ? updatedEntry : e
+        )
+      };
+      await updateCurrentBook(updated);
+      setCurrentVoiceEntry(updatedEntry);
+    }
+  };
+
   const getLastNote = (book) => {
     const allEntries = [
-      ...book.voiceEntries.map(e => ({ text: e.rawText, time: e.timestamp })),
+      ...book.voiceEntries.map(e => ({ text: e.title || e.rawText, time: e.timestamp })),
       ...book.typeEntries.map(e => ({ text: e.text, time: e.timestamp }))
     ].sort((a, b) => b.time - a.time);
-    
+
     if (allEntries.length === 0) return 'No notes yet';
     return allEntries[0].text.substring(0, 60) + (allEntries[0].text.length > 60 ? '...' : '');
   };
@@ -610,13 +726,16 @@ function App() {
               onClick={() => {
                 setCurrentView('book');
                 setCurrentVoiceEntry(null);
+                setVoiceDetailTab('raw');
               }}
               className={`px-4 py-2 rounded-lg border ${borderColor}`}
             >
               ← Back
             </button>
             <div className="flex-1">
-              <h1 className="text-2xl font-bold">Voice Note</h1>
+              <h1 className="text-2xl font-bold">
+                {currentVoiceEntry.title || 'Voice Note'}
+              </h1>
               <p className="text-sm opacity-70">{formatDate(currentVoiceEntry.timestamp)}</p>
             </div>
             <button
@@ -627,48 +746,151 @@ function App() {
             </button>
           </div>
 
+          {/* Tabs for Raw/Summary */}
+          <div className="flex gap-2 mb-6">
+            <button
+              onClick={() => setVoiceDetailTab('raw')}
+              className={`flex-1 py-3 rounded-lg font-medium transition-colors ${
+                voiceDetailTab === 'raw'
+                  ? `${buttonBg} text-white`
+                  : `${cardBg} border ${borderColor}`
+              }`}
+            >
+              Raw Transcript
+            </button>
+            <button
+              onClick={() => setVoiceDetailTab('summary')}
+              className={`flex-1 py-3 rounded-lg font-medium transition-colors flex items-center justify-center gap-2 ${
+                voiceDetailTab === 'summary'
+                  ? `${buttonBg} text-white`
+                  : `${cardBg} border ${borderColor}`
+              }`}
+            >
+              <Sparkles size={18} />
+              AI Summary
+            </button>
+          </div>
+
           {/* Content */}
           <div className={`${cardBg} border ${borderColor} rounded-lg p-6`}>
-            {isEditingVoiceDetail ? (
-              <div>
-                <textarea
-                  value={editingVoiceText}
-                  onChange={(e) => setEditingVoiceText(e.target.value)}
-                  className={`w-full ${inputBg} border ${borderColor} rounded-lg p-4 min-h-[300px] text-base leading-relaxed`}
-                  autoFocus
-                />
-                <div className="flex gap-3 mt-4">
+            {voiceDetailTab === 'raw' ? (
+              // Raw Transcript Tab
+              isEditingVoiceDetail ? (
+                <div>
+                  <textarea
+                    value={editingVoiceText}
+                    onChange={(e) => setEditingVoiceText(e.target.value)}
+                    className={`w-full ${inputBg} border ${borderColor} rounded-lg p-4 min-h-[300px] text-base leading-relaxed`}
+                    autoFocus
+                  />
+                  <div className="flex gap-3 mt-4">
+                    <button
+                      onClick={cancelEditVoice}
+                      className={`flex-1 px-4 py-3 rounded-lg border ${borderColor}`}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={saveEditVoice}
+                      className={`flex-1 ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
+                    >
+                      <Save size={20} />
+                      Save Changes
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <p className="whitespace-pre-wrap text-base leading-relaxed mb-6">
+                    {currentVoiceEntry.rawText}
+                  </p>
                   <button
-                    onClick={cancelEditVoice}
-                    className={`flex-1 px-4 py-3 rounded-lg border ${borderColor}`}
+                    onClick={() => setIsEditingVoiceDetail(true)}
+                    className={`w-full ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
                   >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={saveEditVoice}
-                    className={`flex-1 ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
-                  >
-                    <Save size={20} />
-                    Save Changes
+                    <Edit2 size={20} />
+                    Edit Note
                   </button>
                 </div>
-              </div>
+              )
             ) : (
+              // AI Summary Tab
               <div>
-                <p className="whitespace-pre-wrap text-base leading-relaxed mb-6">
-                  {currentVoiceEntry.rawText}
-                </p>
-                <button
-                  onClick={() => setIsEditingVoiceDetail(true)}
-                  className={`w-full ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
-                >
-                  <Edit2 size={20} />
-                  Edit Note
-                </button>
+                {currentVoiceEntry.summary ? (
+                  <div>
+                    <div className="whitespace-pre-wrap text-base leading-relaxed mb-6">
+                      {currentVoiceEntry.summary}
+                    </div>
+                    <button
+                      onClick={summarizeCurrentVoiceEntry}
+                      disabled={isSummarizing}
+                      className={`w-full ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50`}
+                    >
+                      {isSummarizing ? (
+                        <>
+                          <Loader2 size={20} className="animate-spin" />
+                          Regenerating...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={20} />
+                          Regenerate Summary
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-center py-12">
+                    <Sparkles size={48} className="mx-auto mb-4 opacity-30" />
+                    <p className="opacity-60 mb-6">No AI summary generated yet</p>
+                    <button
+                      onClick={summarizeCurrentVoiceEntry}
+                      disabled={isSummarizing}
+                      className={`${buttonBg} text-white px-6 py-3 rounded-lg flex items-center justify-center gap-2 mx-auto disabled:opacity-50`}
+                    >
+                      {isSummarizing ? (
+                        <>
+                          <Loader2 size={20} className="animate-spin" />
+                          Generating Summary...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={20} />
+                          Generate Summary
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
+
+        {/* LLM Loading Modal */}
+        {showLlmLoadingModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className={`${cardBg} rounded-lg p-6 w-full max-w-md`}>
+              <div className="flex items-center gap-3 mb-4">
+                <Download size={24} className="text-blue-500" />
+                <h2 className="text-xl font-semibold">Loading AI Model</h2>
+              </div>
+              <p className="text-sm opacity-70 mb-4">
+                Downloading AI model (~500MB). This only happens once and will be cached for future use.
+              </p>
+              <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+                <div
+                  className="bg-blue-500 h-3 rounded-full transition-all duration-300"
+                  style={{ width: `${llmProgress}%` }}
+                />
+              </div>
+              <p className="text-sm opacity-60 text-center">{llmProgress}%</p>
+              {llmProgressText && (
+                <p className="text-xs opacity-50 text-center mt-1 truncate">{llmProgressText}</p>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -721,12 +943,12 @@ function App() {
             {/* Entries */}
             <div className="space-y-4 mb-24">
               {currentBook.voiceEntries.map(entry => (
-                <div 
-                  key={entry.id} 
+                <div
+                  key={entry.id}
                   className={`${cardBg} border ${borderColor} rounded-lg p-4 relative group cursor-pointer transition-all hover:shadow-md`}
                   onClick={() => openVoiceDetail(entry)}
                 >
-                  <div 
+                  <div
                     className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -749,8 +971,23 @@ function App() {
                       <Trash2 size={16} />
                     </button>
                   </div>
-                  <p className="text-sm opacity-60 mb-2">{formatDate(entry.timestamp)}</p>
-                  <p className="whitespace-nowrap overflow-hidden text-ellipsis pr-20">{entry.rawText}</p>
+                  <div className="flex items-center gap-2 mb-2">
+                    <p className="text-sm opacity-60">{formatDate(entry.timestamp)}</p>
+                    {entry.summary && (
+                      <span className="flex items-center gap-1 text-xs bg-blue-500 text-white px-2 py-0.5 rounded-full">
+                        <Sparkles size={10} />
+                        AI
+                      </span>
+                    )}
+                  </div>
+                  <p className="whitespace-nowrap overflow-hidden text-ellipsis pr-20 font-medium">
+                    {entry.title || entry.rawText}
+                  </p>
+                  {entry.title && (
+                    <p className="text-sm opacity-60 mt-1 whitespace-nowrap overflow-hidden text-ellipsis pr-20">
+                      {entry.rawText}
+                    </p>
+                  )}
                   <p className="text-xs opacity-50 mt-1">Click to view full note</p>
                 </div>
               ))}
@@ -790,7 +1027,12 @@ function App() {
                       </button>
                     </div>
                     {transcript && (
-                      <p className="text-sm opacity-80 whitespace-pre-wrap">{transcript}</p>
+                      <div 
+                        ref={transcriptScrollRef}
+                        className="max-h-32 overflow-y-auto"
+                      >
+                        <p className="text-sm opacity-80 whitespace-pre-wrap break-words">{transcript}</p>
+                      </div>
                     )}
                   </div>
                 )}
@@ -944,6 +1186,73 @@ function App() {
           </div>
         )}
       </div>
+
+      {/* Summarization Prompt Modal */}
+      {showSummarizePrompt && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className={`${cardBg} rounded-lg p-6 w-full max-w-md`}>
+            <div className="flex items-center gap-3 mb-4">
+              <Sparkles size={24} className="text-blue-500" />
+              <h2 className="text-xl font-semibold">Summarize with AI?</h2>
+            </div>
+            <p className="text-sm opacity-70 mb-6">
+              Generate a bullet point summary and title for this voice note using AI.
+              {!localStorage.getItem('llmModelDownloaded') && (
+                <span className="block mt-2 text-amber-500">
+                  Note: First-time use requires downloading the AI model (~500MB).
+                </span>
+              )}
+            </p>
+            {isSummarizing ? (
+              <div className="flex items-center justify-center gap-3 py-4">
+                <Loader2 size={24} className="animate-spin text-blue-500" />
+                <span>Generating summary...</span>
+              </div>
+            ) : (
+              <div className="flex gap-3">
+                <button
+                  onClick={() => handleSummarizeAfterRecording(false)}
+                  className={`flex-1 px-4 py-3 rounded-lg border ${borderColor}`}
+                >
+                  Not Now
+                </button>
+                <button
+                  onClick={() => handleSummarizeAfterRecording(true)}
+                  className={`flex-1 ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
+                >
+                  <Sparkles size={20} />
+                  Yes, Summarize
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* LLM Loading Modal */}
+      {showLlmLoadingModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className={`${cardBg} rounded-lg p-6 w-full max-w-md`}>
+            <div className="flex items-center gap-3 mb-4">
+              <Download size={24} className="text-blue-500" />
+              <h2 className="text-xl font-semibold">Loading AI Model</h2>
+            </div>
+            <p className="text-sm opacity-70 mb-4">
+              Downloading AI model (~500MB). This only happens once and will be cached for future use.
+            </p>
+            <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+              <div
+                className="bg-blue-500 h-3 rounded-full transition-all duration-300"
+                style={{ width: `${llmProgress}%` }}
+              />
+            </div>
+            <p className="text-sm opacity-60 text-center">{llmProgress}%</p>
+            {llmProgressText && (
+              <p className="text-xs opacity-50 text-center mt-1 truncate">{llmProgressText}</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
