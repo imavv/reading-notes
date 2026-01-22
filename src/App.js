@@ -1,54 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Sparkles, Loader2, Download } from 'lucide-react';
+import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Sparkles, Loader2, Download, LogIn, LogOut, User, Cloud, CloudOff, Menu, X } from 'lucide-react';
 import { initLLM, generateSummary, generateTitle, isModelLoaded, isModelLoading } from './llmService';
+import { AuthProvider, useAuth } from './AuthContext';
+import { dataService, migrateLocalToCloud } from './dataService';
 
-// IndexedDB setup
-const DB_NAME = 'ReadingNotesDB';
-const DB_VERSION = 1;
+function AppContent() {
+  const { user, loading: authLoading, signInWithGoogle, signOut, isConfigured } = useAuth();
 
-const initDB = () => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-    
-    request.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains('books')) {
-        const store = db.createObjectStore('books', { keyPath: 'id' });
-        store.createIndex('lastEdited', 'lastEdited', { unique: false });
-      }
-    };
-  });
-};
-
-const saveBook = async (book) => {
-  const db = await initDB();
-  const tx = db.transaction('books', 'readwrite');
-  const store = tx.objectStore('books');
-  await store.put(book);
-};
-
-const getAllBooks = async () => {
-  const db = await initDB();
-  const tx = db.transaction('books', 'readonly');
-  const store = tx.objectStore('books');
-  return new Promise((resolve) => {
-    const request = store.getAll();
-    request.onsuccess = () => resolve(request.result);
-  });
-};
-
-const deleteBook = async (id) => {
-  const db = await initDB();
-  const tx = db.transaction('books', 'readwrite');
-  const store = tx.objectStore('books');
-  await store.delete(id);
-};
-
-function App() {
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(true);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [books, setBooks] = useState([]);
   const [currentView, setCurrentView] = useState('list'); // 'list', 'book', 'voiceDetail'
   const [currentBook, setCurrentBook] = useState(null);
@@ -56,11 +16,11 @@ function App() {
   const [newBookTitle, setNewBookTitle] = useState('');
   const [newBookAuthor, setNewBookAuthor] = useState('');
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'type'
-  
+
   // Voice detail view
   const [currentVoiceEntry, setCurrentVoiceEntry] = useState(null);
   const [isEditingVoiceDetail, setIsEditingVoiceDetail] = useState(false);
-  
+
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
@@ -68,11 +28,11 @@ function App() {
   const [tempTranscript, setTempTranscript] = useState('');
   const recognitionRef = useRef(null);
   const transcriptScrollRef = useRef(null);
-  
+
   // Type mode states
   const [showAddType, setShowAddType] = useState(false);
   const [newTypeText, setNewTypeText] = useState('');
-  
+
   // Editing states
   const [editingVoiceText, setEditingVoiceText] = useState('');
   const [editingTypeId, setEditingTypeId] = useState(null);
@@ -87,15 +47,42 @@ function App() {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [voiceDetailTab, setVoiceDetailTab] = useState('raw'); // 'raw' or 'summary'
 
+  // Migration states
+  const [showMigrationModal, setShowMigrationModal] = useState(false);
+  const [migrationProgress, setMigrationProgress] = useState('');
+  const [migrationCurrent, setMigrationCurrent] = useState(0);
+  const [migrationTotal, setMigrationTotal] = useState(0);
+
+  // Track if migration check has been done for this session
+  const migrationChecked = useRef(false);
+
   useEffect(() => {
-    loadBooks();
-    const isDark = localStorage.getItem('darkMode') === 'true';
+    const stored = localStorage.getItem('darkMode');
+    // Default to dark mode if not set
+    const isDark = stored === null ? true : stored === 'true';
     setDarkMode(isDark);
   }, []);
 
   useEffect(() => {
     localStorage.setItem('darkMode', darkMode);
   }, [darkMode]);
+
+  // Load books when user changes
+  useEffect(() => {
+    if (!authLoading) {
+      loadBooks();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, authLoading]);
+
+  // Check for migration when user logs in
+  useEffect(() => {
+    if (user && !migrationChecked.current && isConfigured) {
+      migrationChecked.current = true;
+      checkAndMigrate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, isConfigured]);
 
   // Auto-scroll transcript to bottom when new text arrives
   useEffect(() => {
@@ -104,43 +91,61 @@ function App() {
     }
   }, [transcript]);
 
+  const checkAndMigrate = async () => {
+    setShowMigrationModal(true);
+    setMigrationProgress('Checking for local data to migrate...');
+
+    const result = await migrateLocalToCloud(user.id, (message, current, total) => {
+      setMigrationProgress(message);
+      setMigrationCurrent(current);
+      setMigrationTotal(total);
+    });
+
+    if (result.skipped) {
+      setMigrationProgress('You already have cloud data. Loading...');
+    } else if (result.migrated > 0) {
+      setMigrationProgress(`Successfully migrated ${result.migrated} book(s)!`);
+    } else if (result.migrated === 0) {
+      setMigrationProgress('No local data to migrate. Ready to go!');
+    }
+
+    // Brief delay to show the message
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    setShowMigrationModal(false);
+    loadBooks();
+  };
+
   const loadBooks = async () => {
-    const allBooks = await getAllBooks();
+    const allBooks = await dataService.getAllBooks(user?.id);
     const sorted = allBooks.sort((a, b) => b.lastEdited - a.lastEdited);
     setBooks(sorted);
   };
 
   const checkDuplicate = (title, author) => {
-    return books.some(book => 
-      book.title.toLowerCase().trim() === title.toLowerCase().trim() && 
+    return books.some(book =>
+      book.title.toLowerCase().trim() === title.toLowerCase().trim() &&
       book.author.toLowerCase().trim() === author.toLowerCase().trim()
     );
   };
 
+  const isCloudMode = dataService.isCloudMode(user?.id);
+
   const createBook = async () => {
     const title = newBookTitle.trim();
     const author = newBookAuthor.trim();
-    
+
     if (!title || !author) {
       alert('Please enter both book title and author name');
       return;
     }
-    
+
     if (checkDuplicate(title, author)) {
       alert('This book and author combination already exists!');
       return;
     }
-    
-    const book = {
-      id: Date.now().toString(),
-      title,
-      author,
-      lastEdited: Date.now(),
-      voiceEntries: [],
-      typeEntries: []
-    };
-    
-    await saveBook(book);
+
+    const book = await dataService.createBook({ title, author }, user?.id);
+
     await loadBooks();
     setNewBookTitle('');
     setNewBookAuthor('');
@@ -163,35 +168,53 @@ function App() {
 
   const saveVoiceDetail = async () => {
     if (!editingVoiceText.trim()) return;
-    
-    const updated = {
-      voiceEntries: currentBook.voiceEntries.map(e => 
-        e.id === currentVoiceEntry.id 
-          ? { ...e, rawText: editingVoiceText, timestamp: Date.now() }
-          : e
-      )
-    };
-    
-    await updateCurrentBook(updated);
-    setCurrentVoiceEntry({ ...currentVoiceEntry, rawText: editingVoiceText, timestamp: Date.now() });
+
+    if (isCloudMode) {
+      await dataService.updateVoiceEntry(currentVoiceEntry.id, { rawText: editingVoiceText }, user.id);
+      await loadBooks();
+      // Update local state
+      const updatedBook = books.find(b => b.id === currentBook.id);
+      if (updatedBook) {
+        setCurrentBook(updatedBook);
+        const updatedEntry = updatedBook.voiceEntries.find(e => e.id === currentVoiceEntry.id);
+        if (updatedEntry) {
+          setCurrentVoiceEntry(updatedEntry);
+        }
+      }
+    } else {
+      const updated = {
+        voiceEntries: currentBook.voiceEntries.map(e =>
+          e.id === currentVoiceEntry.id
+            ? { ...e, rawText: editingVoiceText, timestamp: Date.now() }
+            : e
+        )
+      };
+      await updateCurrentBook(updated);
+      setCurrentVoiceEntry({ ...currentVoiceEntry, rawText: editingVoiceText, timestamp: Date.now() });
+    }
     setIsEditingVoiceDetail(false);
   };
 
   const deleteVoiceDetail = async () => {
     if (!window.confirm('Delete this voice note?')) return;
-    
-    const updated = {
-      voiceEntries: currentBook.voiceEntries.filter(e => e.id !== currentVoiceEntry.id)
-    };
-    await updateCurrentBook(updated);
+
+    if (isCloudMode) {
+      await dataService.deleteVoiceEntry(currentVoiceEntry.id, user.id);
+      await loadBooks();
+    } else {
+      const updated = {
+        voiceEntries: currentBook.voiceEntries.filter(e => e.id !== currentVoiceEntry.id)
+      };
+      await updateCurrentBook(updated);
+    }
     setCurrentView('book');
     setCurrentVoiceEntry(null);
   };
 
   const exportData = async () => {
-    const allBooks = await getAllBooks();
-    
-    const exportData = {
+    const allBooks = await dataService.getAllBooks(user?.id);
+
+    const exportDataObj = {
       exportDate: new Date().toISOString(),
       totalBooks: allBooks.length,
       books: allBooks.map(book => ({
@@ -215,8 +238,8 @@ function App() {
         }))
       }))
     };
-    
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+
+    const blob = new Blob([JSON.stringify(exportDataObj, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -225,37 +248,32 @@ function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    
+
     alert('Data exported successfully!');
   };
 
   const updateCurrentBook = async (updates) => {
     const updated = { ...currentBook, ...updates, lastEdited: Date.now() };
-    await saveBook(updated);
+    await dataService.saveBook(updated, user?.id);
     setCurrentBook(updated);
     await loadBooks();
   };
 
   const startRecording = async () => {
-    // ADDED: Check if speech recognition is supported
+    // Check if speech recognition is supported
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       alert('Speech recognition not supported in this browser. Please use Chrome or Safari.');
       return;
     }
 
     try {
-      // ADDED: Request microphone permission FIRST using Navigator API
-      // This is critical for iOS Safari - it needs explicit permission before speech recognition
+      // Request microphone permission FIRST using Navigator API
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      // ADDED: Immediately stop the stream (we just needed permission)
-      // We don't need to keep this stream active since SpeechRecognition handles audio
       stream.getTracks().forEach(track => track.stop());
-      
-      // Now proceed with speech recognition
+
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
-      
+
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
@@ -271,7 +289,7 @@ function App() {
 
       recognition.onresult = (event) => {
         let interimTranscript = '';
-        
+
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
@@ -280,13 +298,13 @@ function App() {
             interimTranscript += transcript;
           }
         }
-        
+
         setTranscript(finalTranscript + interimTranscript);
       };
 
       recognition.onerror = (event) => {
         console.error('Speech recognition error:', event.error);
-        
+
         if (event.error === 'no-speech') {
           alert('No speech detected. Please try again and speak clearly.');
         } else if (event.error === 'aborted') {
@@ -294,18 +312,17 @@ function App() {
             alert('Recording was interrupted. Please try again.');
           }
         } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          // ENHANCED: Better error message for iOS users
           alert('Microphone access denied. Please:\n\n1. Go to iPhone Settings → Safari → Microphone → Allow\n2. Go to iPhone Settings → Privacy & Security → Speech Recognition → Enable Safari\n3. Refresh this page and try again');
         } else {
           alert(`Recording error: ${event.error}. Please try again.`);
         }
-        
+
         setIsRecording(false);
       };
 
       recognition.onend = () => {
         console.log('Recording ended');
-        
+
         if (isRecording && !isManualStop && recognitionRef.current) {
           try {
             recognition.start();
@@ -319,20 +336,18 @@ function App() {
       };
 
       recognitionRef.current = recognition;
-      
+
       recognitionRef.current.stopManually = () => {
         isManualStop = true;
         recognition.stop();
       };
-      
-      // CHANGED: Start recognition synchronously (critical for iOS)
+
       recognition.start();
       setTranscript('');
-      
+
     } catch (err) {
-      // ADDED: Handle microphone permission errors
       console.error('Microphone access error:', err);
-      
+
       if (err.name === 'NotAllowedError') {
         alert('Microphone permission denied. Please:\n\n1. Tap the "AA" icon in Safari address bar\n2. Select "Website Settings"\n3. Enable Microphone\n4. Refresh page and try again');
       } else if (err.name === 'NotFoundError') {
@@ -347,16 +362,14 @@ function App() {
 
   const stopRecording = () => {
     if (recognitionRef.current) {
-      // CHANGED: Use the manual stop handler to prevent auto-restart
       if (recognitionRef.current.stopManually) {
         recognitionRef.current.stopManually();
       } else {
         recognitionRef.current.stop();
       }
-      
+
       setIsRecording(false);
-      
-      // ADDED: Short delay before showing edit screen to ensure transcript is captured
+
       setTimeout(() => {
         if (transcript.trim()) {
           setEditingTranscript(true);
@@ -377,11 +390,26 @@ function App() {
       title: null
     };
 
-    const updated = {
-      voiceEntries: [entry, ...currentBook.voiceEntries]
-    };
+    if (isCloudMode) {
+      const cloudEntry = await dataService.addVoiceEntry(currentBook.id, entry, user.id);
+      if (cloudEntry) {
+        entry.id = cloudEntry.id;
+        entry.timestamp = cloudEntry.timestamp;
+      }
+      await loadBooks();
+      // Refresh currentBook
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
+      }
+    } else {
+      const updated = {
+        voiceEntries: [entry, ...currentBook.voiceEntries]
+      };
+      await updateCurrentBook(updated);
+    }
 
-    await updateCurrentBook(updated);
     setTranscript('');
     setTempTranscript('');
     setEditingTranscript(false);
@@ -407,34 +435,56 @@ function App() {
 
   const deleteVoiceEntry = async (entryId) => {
     if (!window.confirm('Delete this voice note?')) return;
-    
-    const updated = {
-      voiceEntries: currentBook.voiceEntries.filter(e => e.id !== entryId)
-    };
-    await updateCurrentBook(updated);
+
+    if (isCloudMode) {
+      await dataService.deleteVoiceEntry(entryId, user.id);
+      await loadBooks();
+      // Refresh currentBook
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
+      }
+    } else {
+      const updated = {
+        voiceEntries: currentBook.voiceEntries.filter(e => e.id !== entryId)
+      };
+      await updateCurrentBook(updated);
+    }
   };
 
   const addTypeEntry = async () => {
     const text = newTypeText.trim();
     if (!text) return;
-    
+
     const wordCount = text.split(/\s+/).length;
     if (wordCount > 10) {
       alert('Maximum 10 words allowed');
       return;
     }
-    
+
     const entry = {
       id: Date.now().toString(),
       text,
       timestamp: Date.now()
     };
-    
-    const updated = {
-      typeEntries: [entry, ...currentBook.typeEntries]
-    };
-    
-    await updateCurrentBook(updated);
+
+    if (isCloudMode) {
+      await dataService.addTypeEntry(currentBook.id, entry, user.id);
+      await loadBooks();
+      // Refresh currentBook
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
+      }
+    } else {
+      const updated = {
+        typeEntries: [entry, ...currentBook.typeEntries]
+      };
+      await updateCurrentBook(updated);
+    }
+
     setNewTypeText('');
     setShowAddType(false);
   };
@@ -447,22 +497,33 @@ function App() {
   const saveEditType = async () => {
     const text = editingTypeText.trim();
     if (!text) return;
-    
+
     const wordCount = text.split(/\s+/).length;
     if (wordCount > 10) {
       alert('Maximum 10 words allowed');
       return;
     }
-    
-    const updated = {
-      typeEntries: currentBook.typeEntries.map(e => 
-        e.id === editingTypeId 
-          ? { ...e, text, timestamp: Date.now() }
-          : e
-      )
-    };
-    
-    await updateCurrentBook(updated);
+
+    if (isCloudMode) {
+      await dataService.updateTypeEntry(editingTypeId, { text }, user.id);
+      await loadBooks();
+      // Refresh currentBook
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
+      }
+    } else {
+      const updated = {
+        typeEntries: currentBook.typeEntries.map(e =>
+          e.id === editingTypeId
+            ? { ...e, text, timestamp: Date.now() }
+            : e
+        )
+      };
+      await updateCurrentBook(updated);
+    }
+
     setEditingTypeId(null);
     setEditingTypeText('');
   };
@@ -474,11 +535,22 @@ function App() {
 
   const deleteTypeEntry = async (entryId) => {
     if (!window.confirm('Delete this quick note?')) return;
-    
-    const updated = {
-      typeEntries: currentBook.typeEntries.filter(e => e.id !== entryId)
-    };
-    await updateCurrentBook(updated);
+
+    if (isCloudMode) {
+      await dataService.deleteTypeEntry(entryId, user.id);
+      await loadBooks();
+      // Refresh currentBook
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
+      }
+    } else {
+      const updated = {
+        typeEntries: currentBook.typeEntries.filter(e => e.id !== entryId)
+      };
+      await updateCurrentBook(updated);
+    }
   };
 
   const searchGoogle = (text) => {
@@ -544,12 +616,27 @@ function App() {
           summary: result.summary,
           title: result.title
         };
-        const updated = {
-          voiceEntries: currentBook.voiceEntries.map(e =>
-            e.id === pendingVoiceEntry.id ? updatedEntry : e
-          )
-        };
-        await updateCurrentBook(updated);
+
+        if (isCloudMode) {
+          await dataService.updateVoiceEntry(pendingVoiceEntry.id, {
+            summary: result.summary,
+            title: result.title
+          }, user.id);
+          await loadBooks();
+          // Refresh currentBook
+          const refreshedBooks = await dataService.getAllBooks(user.id);
+          const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+          if (refreshedBook) {
+            setCurrentBook(refreshedBook);
+          }
+        } else {
+          const updated = {
+            voiceEntries: currentBook.voiceEntries.map(e =>
+              e.id === pendingVoiceEntry.id ? updatedEntry : e
+            )
+          };
+          await updateCurrentBook(updated);
+        }
       }
     }
 
@@ -567,13 +654,23 @@ function App() {
         summary: result.summary,
         title: result.title
       };
-      const updated = {
-        voiceEntries: currentBook.voiceEntries.map(e =>
-          e.id === currentVoiceEntry.id ? updatedEntry : e
-        )
-      };
-      await updateCurrentBook(updated);
-      setCurrentVoiceEntry(updatedEntry);
+
+      if (isCloudMode) {
+        await dataService.updateVoiceEntry(currentVoiceEntry.id, {
+          summary: result.summary,
+          title: result.title
+        }, user.id);
+        await loadBooks();
+        setCurrentVoiceEntry(updatedEntry);
+      } else {
+        const updated = {
+          voiceEntries: currentBook.voiceEntries.map(e =>
+            e.id === currentVoiceEntry.id ? updatedEntry : e
+          )
+        };
+        await updateCurrentBook(updated);
+        setCurrentVoiceEntry(updatedEntry);
+      }
     }
   };
 
@@ -595,19 +692,46 @@ function App() {
   const handleDeleteBook = async (bookId, e) => {
     e.stopPropagation();
     if (window.confirm('Delete this book and all its notes?')) {
-      await deleteBook(bookId);
+      await dataService.deleteBook(bookId, user?.id);
       await loadBooks();
     }
+  };
+
+  const handleSignIn = async () => {
+    const { error } = await signInWithGoogle();
+    if (error) {
+      console.error('Sign in error:', error);
+      alert('Failed to sign in. Please try again.');
+    }
+  };
+
+  const handleSignOut = async () => {
+    const { error } = await signOut();
+    if (error) {
+      console.error('Sign out error:', error);
+    }
+    migrationChecked.current = false;
+    setBooks([]);
+    loadBooks();
   };
 
   const theme = darkMode
     ? 'bg-gray-900 text-gray-100'
     : 'bg-gray-50 text-gray-900';
-  
+
   const cardBg = darkMode ? 'bg-gray-800' : 'bg-white';
   const borderColor = darkMode ? 'border-gray-700' : 'border-gray-200';
   const inputBg = darkMode ? 'bg-gray-700 text-gray-100' : 'bg-white text-gray-900';
   const buttonBg = darkMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-500 hover:bg-blue-600';
+
+  // Auth loading state
+  if (authLoading) {
+    return (
+      <div className={`min-h-screen ${theme} flex items-center justify-center`}>
+        <Loader2 size={32} className="animate-spin" />
+      </div>
+    );
+  }
 
   // List View
   if (currentView === 'list') {
@@ -616,27 +740,121 @@ function App() {
         <div className="max-w-4xl mx-auto p-6">
           {/* Header */}
           <div className="flex justify-between items-center mb-8">
-            <h1 className="text-3xl font-bold">Reading Notes</h1>
-            <div className="flex gap-3">
-              <button
-                onClick={exportData}
-                className={`px-4 py-2 rounded-lg border ${borderColor} flex items-center gap-2 hover:bg-opacity-80`}
-              >
-                Export Data
-              </button>
-              <button
-                onClick={() => setDarkMode(!darkMode)}
-                className={`p-3 rounded-full ${cardBg} border ${borderColor}`}
-              >
-                {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-              </button>
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-bold">Reading Notes</h1>
+              {/* Cloud status indicator */}
+              {isConfigured && (
+                <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${
+                  isCloudMode
+                    ? 'bg-green-500/20 text-green-500'
+                    : 'bg-gray-500/20 text-gray-500'
+                }`}>
+                  {isCloudMode ? <Cloud size={14} /> : <CloudOff size={14} />}
+                  {isCloudMode ? 'Synced' : 'Local'}
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3 items-center">
               <button
                 onClick={() => setShowAddBook(true)}
                 className={`${buttonBg} text-white px-4 py-2 rounded-lg flex items-center gap-2`}
               >
                 <Plus size={20} />
-                Add Book
+                <span className="hidden sm:inline">Add Book</span>
               </button>
+              {/* Header Menu Button */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowHeaderMenu(!showHeaderMenu)}
+                  className={`p-3 rounded-full ${cardBg} border ${borderColor}`}
+                >
+                  {showHeaderMenu ? <X size={20} /> : <Menu size={20} />}
+                </button>
+                {/* Header Dropdown */}
+                {showHeaderMenu && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setShowHeaderMenu(false)}
+                    />
+                    <div className={`absolute right-0 mt-2 w-64 ${cardBg} border ${borderColor} rounded-lg shadow-lg z-50 overflow-hidden`}>
+                      {/* User info section */}
+                      {isConfigured && user && (
+                        <div className={`px-4 py-3 border-b ${borderColor}`}>
+                          <div className="flex items-center gap-3">
+                            {user.user_metadata?.avatar_url ? (
+                              <img
+                                src={user.user_metadata.avatar_url}
+                                alt="Avatar"
+                                className="w-10 h-10 rounded-full"
+                              />
+                            ) : (
+                              <div className={`w-10 h-10 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'} flex items-center justify-center`}>
+                                <User size={20} className="opacity-70" />
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{user.user_metadata?.full_name || 'User'}</p>
+                              <p className="text-xs opacity-60 truncate">{user.email}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {/* Menu items */}
+                      <div className="py-2">
+                        {/* Theme toggle */}
+                        <button
+                          onClick={() => {
+                            setDarkMode(!darkMode);
+                            setShowHeaderMenu(false);
+                          }}
+                          className={`w-full px-4 py-3 flex items-center gap-3 hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'} transition-colors`}
+                        >
+                          {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+                          <span>{darkMode ? 'Light Mode' : 'Dark Mode'}</span>
+                        </button>
+                        {/* Export */}
+                        <button
+                          onClick={() => {
+                            exportData();
+                            setShowHeaderMenu(false);
+                          }}
+                          className={`w-full px-4 py-3 flex items-center gap-3 hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'} transition-colors`}
+                        >
+                          <Download size={18} />
+                          <span>Export Data</span>
+                        </button>
+                        {/* Sign in/out */}
+                        {isConfigured && (
+                          user ? (
+                            <button
+                              onClick={() => {
+                                handleSignOut();
+                                setShowHeaderMenu(false);
+                              }}
+                              className={`w-full px-4 py-3 flex items-center gap-3 hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'} transition-colors text-red-500`}
+                            >
+                              <LogOut size={18} />
+                              <span>Sign Out</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                handleSignIn();
+                                setShowHeaderMenu(false);
+                              }}
+                              className={`w-full px-4 py-3 flex items-center gap-3 hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'} transition-colors`}
+                            >
+                              <LogIn size={18} />
+                              <span>Sign in with Google</span>
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -660,7 +878,7 @@ function App() {
                 <p className="text-sm opacity-80">{getLastNote(book)}</p>
               </div>
             ))}
-            
+
             {books.length === 0 && (
               <div className="text-center py-12 opacity-60">
                 <p>No books yet. Click "Add Book" to get started!</p>
@@ -707,6 +925,31 @@ function App() {
                 >
                   Create
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Migration Modal */}
+        {showMigrationModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className={`${cardBg} rounded-lg p-6 w-full max-w-md`}>
+              <div className="flex items-center gap-3 mb-4">
+                <Cloud size={24} className="text-blue-500" />
+                <h2 className="text-xl font-semibold">Setting Up Cloud Sync</h2>
+              </div>
+              <p className="text-sm opacity-70 mb-4">{migrationProgress}</p>
+              {migrationTotal > 0 && (
+                <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+                  <div
+                    className="bg-blue-500 h-3 rounded-full transition-all duration-300"
+                    style={{ width: `${(migrationCurrent / migrationTotal) * 100}%` }}
+                  />
+                </div>
+              )}
+              <div className="flex items-center justify-center gap-3">
+                <Loader2 size={20} className="animate-spin text-blue-500" />
+                <span className="text-sm opacity-60">Please wait...</span>
               </div>
             </div>
           </div>
@@ -991,7 +1234,7 @@ function App() {
                   <p className="text-xs opacity-50 mt-1">Click to view full note</p>
                 </div>
               ))}
-              
+
               {currentBook.voiceEntries.length === 0 && (
                 <div className="text-center py-12 opacity-60">
                   <p>No voice notes yet. Click the mic button to record!</p>
@@ -1027,7 +1270,7 @@ function App() {
                       </button>
                     </div>
                     {transcript && (
-                      <div 
+                      <div
                         ref={transcriptScrollRef}
                         className="max-h-32 overflow-y-auto"
                       >
@@ -1132,7 +1375,7 @@ function App() {
                   )}
                 </div>
               ))}
-              
+
               {currentBook.typeEntries.length === 0 && (
                 <div className="text-center py-12 opacity-60">
                   <p>No quick notes yet. Click the + button to add one!</p>
@@ -1254,6 +1497,14 @@ function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 
