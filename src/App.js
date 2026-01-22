@@ -18,8 +18,11 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'type'
 
   // Voice detail view
-  const [currentVoiceEntry, setCurrentVoiceEntry] = useState(null);
+  const [currentVoiceEntryId, setCurrentVoiceEntryId] = useState(null);
   const [isEditingVoiceDetail, setIsEditingVoiceDetail] = useState(false);
+
+  // Derived: get current voice entry from currentBook (single source of truth)
+  const currentVoiceEntry = currentBook?.voiceEntries?.find(e => e.id === currentVoiceEntryId) || null;
 
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -160,7 +163,7 @@ function AppContent() {
   };
 
   const openVoiceDetail = (entry) => {
-    setCurrentVoiceEntry(entry);
+    setCurrentVoiceEntryId(entry.id);
     setEditingVoiceText(entry.rawText);
     setIsEditingVoiceDetail(false);
     setCurrentView('voiceDetail');
@@ -170,27 +173,23 @@ function AppContent() {
     if (!editingVoiceText.trim()) return;
 
     if (isCloudMode) {
-      await dataService.updateVoiceEntry(currentVoiceEntry.id, { rawText: editingVoiceText }, user.id);
+      await dataService.updateVoiceEntry(currentVoiceEntryId, { rawText: editingVoiceText }, user.id);
       await loadBooks();
-      // Update local state
-      const updatedBook = books.find(b => b.id === currentBook.id);
-      if (updatedBook) {
-        setCurrentBook(updatedBook);
-        const updatedEntry = updatedBook.voiceEntries.find(e => e.id === currentVoiceEntry.id);
-        if (updatedEntry) {
-          setCurrentVoiceEntry(updatedEntry);
-        }
+      // Refresh currentBook - currentVoiceEntry will auto-update since it's derived
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
       }
     } else {
       const updated = {
         voiceEntries: currentBook.voiceEntries.map(e =>
-          e.id === currentVoiceEntry.id
+          e.id === currentVoiceEntryId
             ? { ...e, rawText: editingVoiceText, timestamp: Date.now() }
             : e
         )
       };
       await updateCurrentBook(updated);
-      setCurrentVoiceEntry({ ...currentVoiceEntry, rawText: editingVoiceText, timestamp: Date.now() });
     }
     setIsEditingVoiceDetail(false);
   };
@@ -199,16 +198,22 @@ function AppContent() {
     if (!window.confirm('Delete this voice note?')) return;
 
     if (isCloudMode) {
-      await dataService.deleteVoiceEntry(currentVoiceEntry.id, user.id);
+      await dataService.deleteVoiceEntry(currentVoiceEntryId, user.id);
       await loadBooks();
+      // Refresh currentBook
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
+      }
     } else {
       const updated = {
-        voiceEntries: currentBook.voiceEntries.filter(e => e.id !== currentVoiceEntry.id)
+        voiceEntries: currentBook.voiceEntries.filter(e => e.id !== currentVoiceEntryId)
       };
       await updateCurrentBook(updated);
     }
     setCurrentView('book');
-    setCurrentVoiceEntry(null);
+    setCurrentVoiceEntryId(null);
   };
 
   const exportData = async () => {
@@ -649,27 +654,30 @@ function AppContent() {
 
     const result = await summarizeEntry(currentVoiceEntry);
     if (result) {
-      const updatedEntry = {
-        ...currentVoiceEntry,
-        summary: result.summary,
-        title: result.title
-      };
-
       if (isCloudMode) {
-        await dataService.updateVoiceEntry(currentVoiceEntry.id, {
+        await dataService.updateVoiceEntry(currentVoiceEntryId, {
           summary: result.summary,
           title: result.title
         }, user.id);
         await loadBooks();
-        setCurrentVoiceEntry(updatedEntry);
+        // Refresh currentBook - currentVoiceEntry will auto-update since it's derived
+        const refreshedBooks = await dataService.getAllBooks(user.id);
+        const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+        if (refreshedBook) {
+          setCurrentBook(refreshedBook);
+        }
       } else {
+        const updatedEntry = {
+          ...currentVoiceEntry,
+          summary: result.summary,
+          title: result.title
+        };
         const updated = {
           voiceEntries: currentBook.voiceEntries.map(e =>
-            e.id === currentVoiceEntry.id ? updatedEntry : e
+            e.id === currentVoiceEntryId ? updatedEntry : e
           )
         };
         await updateCurrentBook(updated);
-        setCurrentVoiceEntry(updatedEntry);
       }
     }
   };
@@ -968,7 +976,7 @@ function AppContent() {
             <button
               onClick={() => {
                 setCurrentView('book');
-                setCurrentVoiceEntry(null);
+                setCurrentVoiceEntryId(null);
                 setVoiceDetailTab('raw');
               }}
               className={`px-4 py-2 rounded-lg border ${borderColor}`}
@@ -1214,15 +1222,7 @@ function AppContent() {
                       <Trash2 size={16} />
                     </button>
                   </div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <p className="text-sm opacity-60">{formatDate(entry.timestamp)}</p>
-                    {entry.summary && (
-                      <span className="flex items-center gap-1 text-xs bg-blue-500 text-white px-2 py-0.5 rounded-full">
-                        <Sparkles size={10} />
-                        AI
-                      </span>
-                    )}
-                  </div>
+                  <p className="text-sm opacity-60 mb-2">{formatDate(entry.timestamp)}</p>
                   <p className="whitespace-nowrap overflow-hidden text-ellipsis pr-20 font-medium">
                     {entry.title || entry.rawText}
                   </p>
