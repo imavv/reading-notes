@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
+import * as serviceWorkerRegistration from './serviceWorkerRegistration';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
@@ -10,6 +11,23 @@ root.render(
     <App />
   </React.StrictMode>
 );
+
+// Register service worker for PWA functionality
+serviceWorkerRegistration.register({
+  onSuccess: () => {
+    console.log('[App] App is ready for offline use');
+  },
+  onUpdate: (registration) => {
+    console.log('[App] New version available');
+    // Optionally show a notification to the user
+    if (window.confirm('New version available! Reload to update?')) {
+      if (registration.waiting) {
+        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      }
+      window.location.reload();
+    }
+  }
+});
 
 // If you want to start measuring performance in your app, pass a function
 // to log results (for example: reportWebVitals(console.log))

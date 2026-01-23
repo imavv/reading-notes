@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Sparkles, Loader2, Download, LogIn, LogOut, User, Cloud, CloudOff, Menu, X } from 'lucide-react';
+import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Sparkles, Loader2, Download, LogIn, LogOut, User, Cloud, CloudOff, Menu, X, WifiOff } from 'lucide-react';
 import { initLLM, generateSummary, generateTitle, isModelLoaded, isModelLoading } from './llmService';
 import { AuthProvider, useAuth } from './AuthContext';
 import { dataService, migrateLocalToCloud } from './dataService';
@@ -59,6 +59,9 @@ function AppContent() {
   // Track if migration check has been done for this session
   const migrationChecked = useRef(false);
 
+  // PWA offline status
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+
   useEffect(() => {
     const stored = localStorage.getItem('darkMode');
     // Default to dark mode if not set
@@ -69,6 +72,20 @@ function AppContent() {
   useEffect(() => {
     localStorage.setItem('darkMode', darkMode);
   }, [darkMode]);
+
+  // Track online/offline status for PWA
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Load books when user changes
   useEffect(() => {
@@ -741,10 +758,19 @@ function AppContent() {
     );
   }
 
+  // Offline Banner Component
+  const OfflineBanner = () => !isOnline && (
+    <div className="bg-amber-500 text-black px-4 py-2 text-center text-sm font-medium flex items-center justify-center gap-2">
+      <WifiOff size={16} />
+      You're offline. Changes will sync when you reconnect.
+    </div>
+  );
+
   // List View
   if (currentView === 'list') {
     return (
       <div className={`min-h-screen ${theme} transition-colors`}>
+        <OfflineBanner />
         <div className="max-w-4xl mx-auto p-6">
           {/* Header */}
           <div className="flex justify-between items-center mb-8">
@@ -970,6 +996,7 @@ function AppContent() {
   if (currentView === 'voiceDetail') {
     return (
       <div className={`min-h-screen ${theme} transition-colors`}>
+        <OfflineBanner />
         <div className="max-w-4xl mx-auto p-6">
           {/* Header */}
           <div className="flex items-center gap-4 mb-6">
@@ -1149,6 +1176,7 @@ function AppContent() {
   // Book View
   return (
     <div className={`min-h-screen ${theme} transition-colors`}>
+      <OfflineBanner />
       <div className="max-w-4xl mx-auto p-6">
         {/* Header */}
         <div className="flex items-center gap-4 mb-6">
