@@ -71,17 +71,19 @@ export const generateSummary = async (rawText) => {
     throw new Error('LLM not initialized. Call initLLM first.');
   }
 
-  const prompt = `Summarize the following reading notes into concise bullet points. Only output the bullet points, no introduction or conclusion:
+  const prompt = `Summarize the following book notes into concise bullet points. Only output the bullet points, no introduction or conclusion (make sure the points are never redundant, always Mutually Exclusive Collectively Exhaustive, and follows a coherent logic/chronological order based on the raw transcript):
 
 ${rawText}`;
 
   try {
     const response = await engine.chat.completions.create({
       messages: [
+        { role: 'system', content: 'You are an expert literary analyst who extracts deep insights from reading notes'},
         { role: 'user', content: prompt }
       ],
-      temperature: 0.3,
-      max_tokens: 500
+      temperature: 0.5,
+      max_tokens: 500,
+      frequency_penalty: 1.0,
     });
 
     return response.choices[0].message.content.trim();
@@ -101,7 +103,7 @@ export const generateTitle = async (rawText) => {
     throw new Error('LLM not initialized. Call initLLM first.');
   }
 
-  const prompt = `Create a 10-word maximum title for these reading notes. Output only the title, nothing else:
+  const prompt = `Create a 15-word maximum title for these book notes. Output only the title, nothing else. Don't make it too general, make it specific about the text at hand:
 
 ${rawText}`;
 
@@ -111,7 +113,8 @@ ${rawText}`;
         { role: 'user', content: prompt }
       ],
       temperature: 0.3,
-      max_tokens: 30
+      max_tokens: 50,
+      
     });
 
     return response.choices[0].message.content.trim();

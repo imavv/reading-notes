@@ -1,5 +1,5 @@
-// Service Worker for Reading Notes PWA
-const CACHE_NAME = 'reading-notes-v1';
+// Service Worker for Bookworm PWA
+const CACHE_NAME = 'bookworm-v1';
 const RUNTIME_CACHE = 'runtime-cache-v1';
 
 // Assets to cache immediately on install
@@ -8,8 +8,7 @@ const PRECACHE_ASSETS = [
   '/index.html',
   '/manifest.json',
   '/favicon.ico',
-  '/logo192.png',
-  '/logo512.png'
+  '/appstore.png'
 ];
 
 // External resources to cache

@@ -4,7 +4,7 @@ import { supabase, isSupabaseConfigured } from './supabaseClient';
 // IndexedDB Functions (Local Storage)
 // ============================================
 
-const DB_NAME = 'ReadingNotesDB';
+const DB_NAME = 'BookwormDB';
 const DB_VERSION = 1;
 
 const initDB = () => {

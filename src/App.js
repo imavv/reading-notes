@@ -10,7 +10,7 @@ function AppContent() {
   const [darkMode, setDarkMode] = useState(true);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [books, setBooks] = useState([]);
-  const [currentView, setCurrentView] = useState('list'); // 'list', 'book', 'voiceDetail'
+  const [currentView, setCurrentView] = useState('list'); // 'list', 'book', 'voiceDetail', 'voiceRecording', 'typeInput'
   const [currentBook, setCurrentBook] = useState(null);
   const [showAddBook, setShowAddBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState('');
@@ -20,6 +20,8 @@ function AppContent() {
   // Voice detail view
   const [currentVoiceEntryId, setCurrentVoiceEntryId] = useState(null);
   const [isEditingVoiceDetail, setIsEditingVoiceDetail] = useState(false);
+  const [isEditingVoiceTitle, setIsEditingVoiceTitle] = useState(false);
+  const [editingVoiceTitle, setEditingVoiceTitle] = useState('');
 
   // Derived: get current voice entry from currentBook (single source of truth)
   const currentVoiceEntry = currentBook?.voiceEntries?.find(e => e.id === currentVoiceEntryId) || null;
@@ -27,13 +29,10 @@ function AppContent() {
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [editingTranscript, setEditingTranscript] = useState(false);
-  const [tempTranscript, setTempTranscript] = useState('');
   const recognitionRef = useRef(null);
   const transcriptScrollRef = useRef(null);
 
   // Type mode states
-  const [showAddType, setShowAddType] = useState(false);
   const [newTypeText, setNewTypeText] = useState('');
 
   // Editing states
@@ -182,7 +181,9 @@ function AppContent() {
   const openVoiceDetail = (entry) => {
     setCurrentVoiceEntryId(entry.id);
     setEditingVoiceText(entry.rawText);
+    setEditingVoiceTitle(entry.title || '');
     setIsEditingVoiceDetail(false);
+    setIsEditingVoiceTitle(false);
     setCurrentView('voiceDetail');
   };
 
@@ -209,6 +210,30 @@ function AppContent() {
       await updateCurrentBook(updated);
     }
     setIsEditingVoiceDetail(false);
+  };
+
+  const saveVoiceTitle = async () => {
+    const newTitle = editingVoiceTitle.trim();
+
+    if (isCloudMode) {
+      await dataService.updateVoiceEntry(currentVoiceEntryId, { title: newTitle || null }, user.id);
+      await loadBooks();
+      const refreshedBooks = await dataService.getAllBooks(user.id);
+      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+      if (refreshedBook) {
+        setCurrentBook(refreshedBook);
+      }
+    } else {
+      const updated = {
+        voiceEntries: currentBook.voiceEntries.map(e =>
+          e.id === currentVoiceEntryId
+            ? { ...e, title: newTitle || null }
+            : e
+        )
+      };
+      await updateCurrentBook(updated);
+    }
+    setIsEditingVoiceTitle(false);
   };
 
   const deleteVoiceDetail = async () => {
@@ -265,7 +290,7 @@ function AppContent() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `reading-notes-backup-${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `bookworm-backup-${new Date().toISOString().split('T')[0]}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -391,22 +416,15 @@ function AppContent() {
       }
 
       setIsRecording(false);
-
-      setTimeout(() => {
-        if (transcript.trim()) {
-          setEditingTranscript(true);
-          setTempTranscript(transcript);
-        }
-      }, 300);
     }
   };
 
   const saveVoiceEntry = async () => {
-    if (!tempTranscript.trim()) return;
+    if (!transcript.trim()) return;
 
     const entry = {
       id: Date.now().toString(),
-      rawText: tempTranscript,
+      rawText: transcript,
       timestamp: Date.now(),
       summary: null,
       title: null
@@ -433,17 +451,19 @@ function AppContent() {
     }
 
     setTranscript('');
-    setTempTranscript('');
-    setEditingTranscript(false);
 
     // Show summarization prompt
     setPendingVoiceEntry(entry);
     setShowSummarizePrompt(true);
+
+    // Return to book view after saving
+    setCurrentView('book');
   };
 
   const startEditVoice = (entry) => {
     openVoiceDetail(entry);
-    setIsEditingVoiceDetail(true);
+    setEditingVoiceTitle(entry.title || '');
+    setIsEditingVoiceTitle(true);
   };
 
   const saveEditVoice = async () => {
@@ -508,7 +528,9 @@ function AppContent() {
     }
 
     setNewTypeText('');
-    setShowAddType(false);
+
+    // Return to book view after saving
+    setCurrentView('book');
   };
 
   const startEditType = (entry) => {
@@ -775,7 +797,7 @@ function AppContent() {
           {/* Header */}
           <div className="flex justify-between items-center mb-8">
             <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold">Reading Notes</h1>
+              <h1 className="text-3xl font-bold">Bookworm</h1>
               {/* Cloud status indicator */}
               {isConfigured && (
                 <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${
@@ -992,6 +1014,161 @@ function AppContent() {
     );
   }
 
+  // Voice Recording View - Full screen blank page
+  if (currentView === 'voiceRecording') {
+    return (
+      <div className={`min-h-screen ${theme} transition-colors`}>
+        <OfflineBanner />
+        <div className="max-w-4xl mx-auto p-6">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-8">
+            <button
+              onClick={() => {
+                stopRecording();
+                setTranscript('');
+                setCurrentView('book');
+              }}
+              className="text-lg opacity-70 hover:opacity-100"
+            >
+              Close
+            </button>
+            <div className="flex items-center gap-3">
+              {isRecording ? (
+                <>
+                  <Mic size={20} className="text-blue-500" />
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                    <span className="text-sm font-medium text-red-500">Recording</span>
+                  </div>
+                </>
+              ) : (
+                <Mic size={20} className="opacity-50" />
+              )}
+            </div>
+            <button
+              onClick={saveVoiceEntry}
+              disabled={!transcript.trim()}
+              className={`text-lg font-medium ${
+                transcript.trim()
+                  ? 'text-green-500 hover:text-green-400'
+                  : 'opacity-30 cursor-not-allowed'
+              }`}
+            >
+              Save
+            </button>
+          </div>
+
+          {/* Main Content Area */}
+          <div className="min-h-[70vh]">
+            <textarea
+              ref={transcriptScrollRef}
+              value={transcript}
+              onChange={(e) => setTranscript(e.target.value)}
+              placeholder="Tap the microphone to start recording..."
+              className={`w-full h-full min-h-[70vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
+              style={{
+                background: 'transparent',
+                fontFamily: 'inherit'
+              }}
+            />
+          </div>
+
+          {/* Recording Controls - Fixed at bottom */}
+          <div className="fixed bottom-8 left-0 right-0 px-6">
+            <div className="max-w-4xl mx-auto flex justify-center">
+              {!isRecording ? (
+                <button
+                  onClick={startRecording}
+                  className="bg-blue-500 hover:bg-blue-600 text-white p-6 rounded-full shadow-lg transition-all"
+                >
+                  <Mic size={32} />
+                </button>
+              ) : (
+                <button
+                  onClick={stopRecording}
+                  className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full shadow-lg transition-all font-medium"
+                >
+                  Stop Recording
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Type Input View - Full screen blank page
+  if (currentView === 'typeInput') {
+    const wordCount = newTypeText.trim() ? newTypeText.trim().split(/\s+/).length : 0;
+    const wordsRemaining = 10 - wordCount;
+    const isOverLimit = wordCount > 10;
+
+    return (
+      <div className={`min-h-screen ${theme} transition-colors`}>
+        <OfflineBanner />
+        <div className="max-w-4xl mx-auto p-6">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-8">
+            <button
+              onClick={() => {
+                setNewTypeText('');
+                setCurrentView('book');
+              }}
+              className="text-lg opacity-70 hover:opacity-100"
+            >
+              Close
+            </button>
+            <div className="flex items-center gap-2">
+              <span className={`text-sm font-medium ${
+                isOverLimit ? 'text-red-500' : wordsRemaining <= 3 ? 'text-amber-500' : 'text-red-400'
+              }`}>
+                {wordsRemaining} word{wordsRemaining !== 1 ? 's' : ''} remaining
+              </span>
+            </div>
+            <button
+              onClick={addTypeEntry}
+              disabled={!newTypeText.trim() || isOverLimit}
+              className={`text-lg font-medium ${
+                newTypeText.trim() && !isOverLimit
+                  ? 'text-green-500 hover:text-green-400'
+                  : 'opacity-30 cursor-not-allowed'
+              }`}
+            >
+              Save
+            </button>
+          </div>
+
+          {/* Main Content Area */}
+          <div className="min-h-[70vh]">
+            <textarea
+              value={newTypeText}
+              onChange={(e) => setNewTypeText(e.target.value)}
+              placeholder="Type your quick note (max 10 words)..."
+              className={`w-full h-full min-h-[70vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
+              style={{
+                background: 'transparent',
+                fontFamily: 'inherit'
+              }}
+              autoFocus
+            />
+          </div>
+
+          {/* Word limit warning */}
+          {isOverLimit && (
+            <div className="fixed bottom-8 left-0 right-0 px-6">
+              <div className="max-w-4xl mx-auto">
+                <div className="bg-red-500 text-white px-6 py-3 rounded-lg text-center font-medium shadow-lg">
+                  Exceeded word limit. Please reduce to 10 words or less.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // Voice Detail View
   if (currentView === 'voiceDetail') {
     return (
@@ -1011,9 +1188,49 @@ function AppContent() {
               ← Back
             </button>
             <div className="flex-1">
-              <h1 className="text-2xl font-bold">
-                {currentVoiceEntry.title || 'Voice Note'}
-              </h1>
+              {isEditingVoiceTitle ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={editingVoiceTitle}
+                    onChange={(e) => setEditingVoiceTitle(e.target.value)}
+                    placeholder="Enter title..."
+                    className={`flex-1 ${inputBg} border ${borderColor} rounded-lg px-3 py-2 text-xl font-bold`}
+                    autoFocus
+                    onKeyPress={(e) => e.key === 'Enter' && saveVoiceTitle()}
+                  />
+                  <button
+                    onClick={saveVoiceTitle}
+                    className={`${buttonBg} text-white p-2 rounded-lg`}
+                  >
+                    <Check size={20} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsEditingVoiceTitle(false);
+                      setEditingVoiceTitle(currentVoiceEntry.title || '');
+                    }}
+                    className={`p-2 rounded-lg border ${borderColor}`}
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 group">
+                  <h1 className="text-2xl font-bold">
+                    {currentVoiceEntry.title || 'Voice Note'}
+                  </h1>
+                  <button
+                    onClick={() => {
+                      setEditingVoiceTitle(currentVoiceEntry.title || '');
+                      setIsEditingVoiceTitle(true);
+                    }}
+                    className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-blue-500 hover:text-white transition-all"
+                  >
+                    <Edit2 size={16} />
+                  </button>
+                </div>
+              )}
               <p className="text-sm opacity-70">{formatDate(currentVoiceEntry.timestamp)}</p>
             </div>
             <button
@@ -1270,73 +1487,19 @@ function AppContent() {
               )}
             </div>
 
-            {/* Recording UI */}
+            {/* Add Voice Note Button */}
             <div className="fixed bottom-6 left-0 right-0 px-6 z-10">
               <div className="max-w-4xl mx-auto">
-                {!isRecording && !editingTranscript && (
-                  <button
-                    onClick={startRecording}
-                    className={`w-full ${buttonBg} text-white py-4 rounded-lg flex items-center justify-center gap-2 shadow-lg`}
-                  >
-                    <Mic size={24} />
-                    Start Recording
-                  </button>
-                )}
-
-                {isRecording && (
-                  <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg`}>
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                        <span className="font-medium">Recording...</span>
-                      </div>
-                      <button
-                        onClick={stopRecording}
-                        className={`${buttonBg} text-white px-6 py-2 rounded-lg`}
-                      >
-                        Stop
-                      </button>
-                    </div>
-                    {transcript && (
-                      <div
-                        ref={transcriptScrollRef}
-                        className="max-h-32 overflow-y-auto"
-                      >
-                        <p className="text-sm opacity-80 whitespace-pre-wrap break-words">{transcript}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {editingTranscript && (
-                  <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg`}>
-                    <textarea
-                      value={tempTranscript}
-                      onChange={(e) => setTempTranscript(e.target.value)}
-                      className={`w-full ${inputBg} border ${borderColor} rounded-lg p-3 mb-3 min-h-[120px]`}
-                      placeholder="Edit your transcript..."
-                    />
-                    <div className="flex gap-3">
-                      <button
-                        onClick={() => {
-                          setEditingTranscript(false);
-                          setTempTranscript('');
-                          setTranscript('');
-                        }}
-                        className={`flex-1 px-4 py-2 rounded-lg border ${borderColor}`}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={saveVoiceEntry}
-                        className={`flex-1 ${buttonBg} text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2`}
-                      >
-                        <Check size={20} />
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <button
+                  onClick={() => {
+                    setCurrentView('voiceRecording');
+                    setTimeout(() => startRecording(), 300);
+                  }}
+                  className={`w-full ${buttonBg} text-white py-4 rounded-lg flex items-center justify-center gap-2 shadow-lg`}
+                >
+                  <Mic size={24} />
+                  Add Voice Note
+                </button>
               </div>
             </div>
           </div>
@@ -1411,47 +1574,16 @@ function AppContent() {
               )}
             </div>
 
-            {/* Add Button */}
+            {/* Add Quick Note Button */}
             <div className="fixed bottom-6 left-0 right-0 px-6 z-10">
               <div className="max-w-4xl mx-auto">
-                {!showAddType ? (
-                  <button
-                    onClick={() => setShowAddType(true)}
-                    className={`w-full ${buttonBg} text-white py-4 rounded-lg flex items-center justify-center gap-2 shadow-lg`}
-                  >
-                    <Plus size={24} />
-                    Add Quick Note
-                  </button>
-                ) : (
-                  <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg`}>
-                    <input
-                      type="text"
-                      value={newTypeText}
-                      onChange={(e) => setNewTypeText(e.target.value)}
-                      placeholder="Enter text (max 10 words)"
-                      className={`w-full ${inputBg} border ${borderColor} rounded-lg p-3 mb-3`}
-                      onKeyPress={(e) => e.key === 'Enter' && addTypeEntry()}
-                      autoFocus
-                    />
-                    <div className="flex gap-3">
-                      <button
-                        onClick={() => {
-                          setShowAddType(false);
-                          setNewTypeText('');
-                        }}
-                        className={`flex-1 px-4 py-2 rounded-lg border ${borderColor}`}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={addTypeEntry}
-                        className={`flex-1 ${buttonBg} text-white px-4 py-2 rounded-lg`}
-                      >
-                        Add
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <button
+                  onClick={() => setCurrentView('typeInput')}
+                  className={`w-full ${buttonBg} text-white py-4 rounded-lg flex items-center justify-center gap-2 shadow-lg`}
+                >
+                  <Plus size={24} />
+                  Add Quick Note
+                </button>
               </div>
             </div>
           </div>
