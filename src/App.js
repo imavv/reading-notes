@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Sparkles, Loader2, Download, LogIn, LogOut, User, Cloud, CloudOff, Menu, X, WifiOff } from 'lucide-react';
+import { Mic, Plus, Search, Moon, Sun, Edit2, Trash2, Sparkles, Loader2, Download, LogIn, LogOut, User, Cloud, CloudOff, Menu, X, WifiOff } from 'lucide-react';
 import { initLLM, generateSummary, generateTitle, isModelLoaded, isModelLoading } from './llmService';
 import { AuthProvider, useAuth } from './AuthContext';
 import { dataService, migrateLocalToCloud } from './dataService';
@@ -19,9 +19,6 @@ function AppContent() {
 
   // Voice detail view
   const [currentVoiceEntryId, setCurrentVoiceEntryId] = useState(null);
-  const [isEditingVoiceDetail, setIsEditingVoiceDetail] = useState(false);
-  const [isEditingVoiceTitle, setIsEditingVoiceTitle] = useState(false);
-  const [editingVoiceTitle, setEditingVoiceTitle] = useState('');
 
   // Derived: get current voice entry from currentBook (single source of truth)
   const currentVoiceEntry = currentBook?.voiceEntries?.find(e => e.id === currentVoiceEntryId) || null;
@@ -38,7 +35,6 @@ function AppContent() {
   // Editing states
   const [editingVoiceText, setEditingVoiceText] = useState('');
   const [editingTypeId, setEditingTypeId] = useState(null);
-  const [editingTypeText, setEditingTypeText] = useState('');
 
   // LLM states
   const [llmProgress, setLlmProgress] = useState(0);
@@ -181,10 +177,8 @@ function AppContent() {
   const openVoiceDetail = (entry) => {
     setCurrentVoiceEntryId(entry.id);
     setEditingVoiceText(entry.rawText);
-    setEditingVoiceTitle(entry.title || '');
-    setIsEditingVoiceDetail(false);
-    setIsEditingVoiceTitle(false);
     setCurrentView('voiceDetail');
+    setVoiceDetailTab('raw');
   };
 
   const saveVoiceDetail = async () => {
@@ -209,32 +203,13 @@ function AppContent() {
       };
       await updateCurrentBook(updated);
     }
-    setIsEditingVoiceDetail(false);
+
+    // Return to book view after saving
+    setCurrentView('book');
+    setCurrentVoiceEntryId(null);
+    setVoiceDetailTab('raw');
   };
 
-  const saveVoiceTitle = async () => {
-    const newTitle = editingVoiceTitle.trim();
-
-    if (isCloudMode) {
-      await dataService.updateVoiceEntry(currentVoiceEntryId, { title: newTitle || null }, user.id);
-      await loadBooks();
-      const refreshedBooks = await dataService.getAllBooks(user.id);
-      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
-      if (refreshedBook) {
-        setCurrentBook(refreshedBook);
-      }
-    } else {
-      const updated = {
-        voiceEntries: currentBook.voiceEntries.map(e =>
-          e.id === currentVoiceEntryId
-            ? { ...e, title: newTitle || null }
-            : e
-        )
-      };
-      await updateCurrentBook(updated);
-    }
-    setIsEditingVoiceTitle(false);
-  };
 
   const deleteVoiceDetail = async () => {
     if (!window.confirm('Delete this voice note?')) return;
@@ -460,20 +435,6 @@ function AppContent() {
     setCurrentView('book');
   };
 
-  const startEditVoice = (entry) => {
-    openVoiceDetail(entry);
-    setEditingVoiceTitle(entry.title || '');
-    setIsEditingVoiceTitle(true);
-  };
-
-  const saveEditVoice = async () => {
-    await saveVoiceDetail();
-  };
-
-  const cancelEditVoice = () => {
-    setEditingVoiceText(currentVoiceEntry.rawText);
-    setIsEditingVoiceDetail(false);
-  };
 
   const deleteVoiceEntry = async (entryId) => {
     if (!window.confirm('Delete this voice note?')) return;
@@ -535,11 +496,12 @@ function AppContent() {
 
   const startEditType = (entry) => {
     setEditingTypeId(entry.id);
-    setEditingTypeText(entry.text);
+    setNewTypeText(entry.text);
+    setCurrentView('typeInput');
   };
 
   const saveEditType = async () => {
-    const text = editingTypeText.trim();
+    const text = newTypeText.trim();
     if (!text) return;
 
     const wordCount = text.split(/\s+/).length;
@@ -569,13 +531,10 @@ function AppContent() {
     }
 
     setEditingTypeId(null);
-    setEditingTypeText('');
+    setNewTypeText('');
+    setCurrentView('book');
   };
 
-  const cancelEditType = () => {
-    setEditingTypeId(null);
-    setEditingTypeText('');
-  };
 
   const deleteTypeEntry = async (entryId) => {
     if (!window.confirm('Delete this quick note?')) return;
@@ -1103,6 +1062,7 @@ function AppContent() {
     const wordCount = newTypeText.trim() ? newTypeText.trim().split(/\s+/).length : 0;
     const wordsRemaining = 10 - wordCount;
     const isOverLimit = wordCount > 10;
+    const isEditMode = editingTypeId !== null;
 
     return (
       <div className={`min-h-screen ${theme} transition-colors`}>
@@ -1113,6 +1073,7 @@ function AppContent() {
             <button
               onClick={() => {
                 setNewTypeText('');
+                setEditingTypeId(null);
                 setCurrentView('book');
               }}
               className="text-lg opacity-70 hover:opacity-100"
@@ -1127,7 +1088,7 @@ function AppContent() {
               </span>
             </div>
             <button
-              onClick={addTypeEntry}
+              onClick={isEditMode ? saveEditType : addTypeEntry}
               disabled={!newTypeText.trim() || isOverLimit}
               className={`text-lg font-medium ${
                 newTypeText.trim() && !isOverLimit
@@ -1176,68 +1137,38 @@ function AppContent() {
         <OfflineBanner />
         <div className="max-w-4xl mx-auto p-6">
           {/* Header */}
-          <div className="flex items-center gap-4 mb-6">
+          <div className="flex items-center justify-between mb-8">
             <button
               onClick={() => {
+                setEditingVoiceText(currentVoiceEntry.rawText);
                 setCurrentView('book');
                 setCurrentVoiceEntryId(null);
                 setVoiceDetailTab('raw');
               }}
-              className={`px-4 py-2 rounded-lg border ${borderColor}`}
+              className="text-lg opacity-70 hover:opacity-100"
             >
-              ← Back
+              Close
             </button>
-            <div className="flex-1">
-              {isEditingVoiceTitle ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={editingVoiceTitle}
-                    onChange={(e) => setEditingVoiceTitle(e.target.value)}
-                    placeholder="Enter title..."
-                    className={`flex-1 ${inputBg} border ${borderColor} rounded-lg px-3 py-2 text-xl font-bold`}
-                    autoFocus
-                    onKeyPress={(e) => e.key === 'Enter' && saveVoiceTitle()}
-                  />
-                  <button
-                    onClick={saveVoiceTitle}
-                    className={`${buttonBg} text-white p-2 rounded-lg`}
-                  >
-                    <Check size={20} />
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsEditingVoiceTitle(false);
-                      setEditingVoiceTitle(currentVoiceEntry.title || '');
-                    }}
-                    className={`p-2 rounded-lg border ${borderColor}`}
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 group">
-                  <h1 className="text-2xl font-bold">
-                    {currentVoiceEntry.title || 'Voice Note'}
-                  </h1>
-                  <button
-                    onClick={() => {
-                      setEditingVoiceTitle(currentVoiceEntry.title || '');
-                      setIsEditingVoiceTitle(true);
-                    }}
-                    className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-blue-500 hover:text-white transition-all"
-                  >
-                    <Edit2 size={16} />
-                  </button>
-                </div>
-              )}
-              <p className="text-sm opacity-70">{formatDate(currentVoiceEntry.timestamp)}</p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={deleteVoiceDetail}
+                className="p-2 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+              >
+                <Trash2 size={18} />
+              </button>
             </div>
             <button
-              onClick={deleteVoiceDetail}
-              className="p-2 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+              onClick={async () => {
+                await saveVoiceDetail();
+              }}
+              disabled={!editingVoiceText.trim()}
+              className={`text-lg font-medium ${
+                editingVoiceText.trim()
+                  ? 'text-green-500 hover:text-green-400'
+                  : 'opacity-30 cursor-not-allowed'
+              }`}
             >
-              <Trash2 size={20} />
+              Save
             </button>
           </div>
 
@@ -1251,7 +1182,7 @@ function AppContent() {
                   : `${cardBg} border ${borderColor}`
               }`}
             >
-              Raw Transcript
+              Edit
             </button>
             <button
               onClick={() => setVoiceDetailTab('summary')}
@@ -1266,100 +1197,72 @@ function AppContent() {
             </button>
           </div>
 
-          {/* Content */}
-          <div className={`${cardBg} border ${borderColor} rounded-lg p-6`}>
-            {voiceDetailTab === 'raw' ? (
-              // Raw Transcript Tab
-              isEditingVoiceDetail ? (
+          {voiceDetailTab === 'raw' ? (
+            // Raw Transcript Tab - Always editable
+            <div className="min-h-[60vh]">
+              <textarea
+                value={editingVoiceText}
+                onChange={(e) => setEditingVoiceText(e.target.value)}
+                placeholder="Edit your voice note..."
+                className={`w-full h-full min-h-[60vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
+                style={{
+                  background: 'transparent',
+                  fontFamily: 'inherit'
+                }}
+                autoFocus
+              />
+            </div>
+          ) : (
+            // AI Summary Tab
+            <div className={`${cardBg} border ${borderColor} rounded-lg p-6`}>
+              {currentVoiceEntry.summary ? (
                 <div>
-                  <textarea
-                    value={editingVoiceText}
-                    onChange={(e) => setEditingVoiceText(e.target.value)}
-                    className={`w-full ${inputBg} border ${borderColor} rounded-lg p-4 min-h-[300px] text-base leading-relaxed`}
-                    autoFocus
-                  />
-                  <div className="flex gap-3 mt-4">
-                    <button
-                      onClick={cancelEditVoice}
-                      className={`flex-1 px-4 py-3 rounded-lg border ${borderColor}`}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={saveEditVoice}
-                      className={`flex-1 ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
-                    >
-                      <Save size={20} />
-                      Save Changes
-                    </button>
+                  <div className="whitespace-pre-wrap text-base leading-relaxed mb-6">
+                    {currentVoiceEntry.summary}
                   </div>
-                </div>
-              ) : (
-                <div>
-                  <p className="whitespace-pre-wrap text-base leading-relaxed mb-6">
-                    {currentVoiceEntry.rawText}
-                  </p>
                   <button
-                    onClick={() => setIsEditingVoiceDetail(true)}
-                    className={`w-full ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2`}
+                    onClick={summarizeCurrentVoiceEntry}
+                    disabled={isSummarizing}
+                    className={`w-full ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50`}
                   >
-                    <Edit2 size={20} />
-                    Edit Note
+                    {isSummarizing ? (
+                      <>
+                        <Loader2 size={20} className="animate-spin" />
+                        Regenerating...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={20} />
+                        Regenerate Summary
+                      </>
+                    )}
                   </button>
                 </div>
-              )
-            ) : (
-              // AI Summary Tab
-              <div>
-                {currentVoiceEntry.summary ? (
-                  <div>
-                    <div className="whitespace-pre-wrap text-base leading-relaxed mb-6">
-                      {currentVoiceEntry.summary}
-                    </div>
-                    <button
-                      onClick={summarizeCurrentVoiceEntry}
-                      disabled={isSummarizing}
-                      className={`w-full ${buttonBg} text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50`}
-                    >
-                      {isSummarizing ? (
-                        <>
-                          <Loader2 size={20} className="animate-spin" />
-                          Regenerating...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles size={20} />
-                          Regenerate Summary
-                        </>
-                      )}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="text-center py-12">
-                    <Sparkles size={48} className="mx-auto mb-4 opacity-30" />
-                    <p className="opacity-60 mb-6">No AI summary generated yet</p>
-                    <button
-                      onClick={summarizeCurrentVoiceEntry}
-                      disabled={isSummarizing}
-                      className={`${buttonBg} text-white px-6 py-3 rounded-lg flex items-center justify-center gap-2 mx-auto disabled:opacity-50`}
-                    >
-                      {isSummarizing ? (
-                        <>
-                          <Loader2 size={20} className="animate-spin" />
-                          Generating Summary...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles size={20} />
-                          Generate Summary
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+              ) : (
+                <div className="text-center py-12">
+                  <Sparkles size={48} className="mx-auto mb-4 opacity-30" />
+                  <p className="opacity-60 mb-6">No AI summary generated yet</p>
+                  <button
+                    onClick={summarizeCurrentVoiceEntry}
+                    disabled={isSummarizing}
+                    className={`${buttonBg} text-white px-6 py-3 rounded-lg flex items-center justify-center gap-2 mx-auto disabled:opacity-50`}
+                  >
+                    {isSummarizing ? (
+                      <>
+                        <Loader2 size={20} className="animate-spin" />
+                        Generating Summary...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={20} />
+                        Generate Summary
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* LLM Loading Modal */}
@@ -1451,15 +1354,6 @@ function AppContent() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        startEditVoice(entry);
-                      }}
-                      className="p-2 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
-                    >
-                      <Edit2 size={16} />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
                         deleteVoiceEntry(entry.id);
                       }}
                       className="p-2 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
@@ -1511,59 +1405,32 @@ function AppContent() {
             <div className="space-y-4 mb-24">
               {currentBook.typeEntries.map(entry => (
                 <div key={entry.id} className={`${cardBg} border ${borderColor} rounded-lg p-4 group`}>
-                  {editingTypeId === entry.id ? (
-                    <div>
-                      <input
-                        type="text"
-                        value={editingTypeText}
-                        onChange={(e) => setEditingTypeText(e.target.value)}
-                        className={`w-full ${inputBg} border ${borderColor} rounded-lg p-3 mb-3`}
-                        autoFocus
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          onClick={cancelEditType}
-                          className={`flex-1 px-3 py-2 rounded-lg border ${borderColor} text-sm`}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={saveEditType}
-                          className={`flex-1 ${buttonBg} text-white px-3 py-2 rounded-lg text-sm flex items-center justify-center gap-1`}
-                        >
-                          <Save size={16} />
-                          Save
-                        </button>
-                      </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <p className="text-sm opacity-60 mb-1">{formatDate(entry.timestamp)}</p>
+                      <p className="font-medium">{entry.text}</p>
                     </div>
-                  ) : (
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <p className="text-sm opacity-60 mb-1">{formatDate(entry.timestamp)}</p>
-                        <p className="font-medium">{entry.text}</p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => searchGoogle(entry.text)}
-                          className={`p-2 rounded-lg border ${borderColor} hover:bg-blue-500 hover:text-white hover:border-blue-500 transition-colors`}
-                        >
-                          <Search size={18} />
-                        </button>
-                        <button
-                          onClick={() => startEditType(entry)}
-                          className="p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-500 hover:text-white"
-                        >
-                          <Edit2 size={18} />
-                        </button>
-                        <button
-                          onClick={() => deleteTypeEntry(entry.id)}
-                          className="p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white"
-                        >
-                          <Trash2 size={18} />
-                        </button>
-                      </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => searchGoogle(entry.text)}
+                        className={`p-2 rounded-lg border ${borderColor} hover:bg-blue-500 hover:text-white hover:border-blue-500 transition-colors`}
+                      >
+                        <Search size={18} />
+                      </button>
+                      <button
+                        onClick={() => startEditType(entry)}
+                        className="p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-500 hover:text-white"
+                      >
+                        <Edit2 size={18} />
+                      </button>
+                      <button
+                        onClick={() => deleteTypeEntry(entry.id)}
+                        className="p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white"
+                      >
+                        <Trash2 size={18} />
+                      </button>
                     </div>
-                  )}
+                  </div>
                 </div>
               ))}
 
