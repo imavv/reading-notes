@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Plus, X, Search, Moon, Sun, Edit2, Check, Trash2, Save } from 'lucide-react';
+import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Loader2 } from 'lucide-react';
 
 // IndexedDB setup
 const DB_NAME = 'ReadingNotesDB';
@@ -62,10 +62,13 @@ function App() {
   
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState('');
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [modelLoadProgress, setModelLoadProgress] = useState(null);
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [tempTranscript, setTempTranscript] = useState('');
-  const recognitionRef = useRef(null);
+  const whisperWorkerRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
   
   // Type mode states
   const [showAddType, setShowAddType] = useState(false);
@@ -85,6 +88,30 @@ function App() {
   useEffect(() => {
     localStorage.setItem('darkMode', darkMode);
   }, [darkMode]);
+
+  useEffect(() => {
+    const worker = new Worker(new URL('./whisperWorker.js', import.meta.url), { type: 'module' });
+
+    worker.onmessage = (event) => {
+      const { type } = event.data;
+      if (type === 'model-progress') {
+        const { progress } = event.data.data;
+        if (typeof progress === 'number') setModelLoadProgress(Math.round(progress));
+      } else if (type === 'model-ready') {
+        setModelLoadProgress(null);
+      } else if (type === 'result') {
+        setIsTranscribing(false);
+        setTempTranscript(event.data.text.trim());
+        setEditingTranscript(true);
+      } else if (type === 'error') {
+        setIsTranscribing(false);
+        alert(`Transcription failed: ${event.data.error}`);
+      }
+    };
+
+    whisperWorkerRef.current = worker;
+    return () => worker.terminate();
+  }, []);
 
   const loadBooks = async () => {
     const allBooks = await getAllBooks();
@@ -218,103 +245,59 @@ function App() {
     await loadBooks();
   };
 
+  // Decodes recorded audio to mono 16kHz Float32 samples, the format Whisper expects
+  const decodeAudioTo16kMono = async (blob) => {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await audioContext.decodeAudioData(arrayBuffer);
+    audioContext.close();
+
+    const targetSampleRate = 16000;
+    const offlineContext = new OfflineAudioContext(
+      1,
+      Math.ceil(decoded.duration * targetSampleRate),
+      targetSampleRate
+    );
+    const source = offlineContext.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offlineContext.destination);
+    source.start(0);
+
+    const resampled = await offlineContext.startRendering();
+    return resampled.getChannelData(0);
+  };
+
+  const transcribeRecording = async () => {
+    const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+    audioChunksRef.current = [];
+
+    if (blob.size === 0) return;
+
+    setIsTranscribing(true);
+    const audioData = await decodeAudioTo16kMono(blob);
+    whisperWorkerRef.current.postMessage({ type: 'transcribe', audio: audioData });
+  };
+
   const startRecording = async () => {
-    // ADDED: Check if speech recognition is supported
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      alert('Speech recognition not supported in this browser. Please use Chrome or Safari.');
-      return;
-    }
-
     try {
-      // ADDED: Request microphone permission FIRST using Navigator API
-      // This is critical for iOS Safari - it needs explicit permission before speech recognition
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      // ADDED: Immediately stop the stream (we just needed permission)
-      // We don't need to keep this stream active since SpeechRecognition handles audio
-      stream.getTracks().forEach(track => track.stop());
-      
-      // Now proceed with speech recognition
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
-      
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-      recognition.maxAlternatives = 1;
+      audioChunksRef.current = [];
 
-      let finalTranscript = '';
-      let isManualStop = false;
-
-      recognition.onstart = () => {
-        console.log('Recording started');
-        setIsRecording(true);
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop());
+        transcribeRecording();
       };
 
-      recognition.onresult = (event) => {
-        let interimTranscript = '';
-        
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript + ' ';
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-        
-        setTranscript(finalTranscript + interimTranscript);
-      };
-
-      recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        
-        if (event.error === 'no-speech') {
-          alert('No speech detected. Please try again and speak clearly.');
-        } else if (event.error === 'aborted') {
-          if (!isManualStop) {
-            alert('Recording was interrupted. Please try again.');
-          }
-        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          // ENHANCED: Better error message for iOS users
-          alert('Microphone access denied. Please:\n\n1. Go to iPhone Settings → Safari → Microphone → Allow\n2. Go to iPhone Settings → Privacy & Security → Speech Recognition → Enable Safari\n3. Refresh this page and try again');
-        } else {
-          alert(`Recording error: ${event.error}. Please try again.`);
-        }
-        
-        setIsRecording(false);
-      };
-
-      recognition.onend = () => {
-        console.log('Recording ended');
-        
-        if (isRecording && !isManualStop && recognitionRef.current) {
-          try {
-            recognition.start();
-          } catch (err) {
-            console.error('Failed to restart:', err);
-            setIsRecording(false);
-          }
-        } else {
-          setIsRecording(false);
-        }
-      };
-
-      recognitionRef.current = recognition;
-      
-      recognitionRef.current.stopManually = () => {
-        isManualStop = true;
-        recognition.stop();
-      };
-      
-      // CHANGED: Start recognition synchronously (critical for iOS)
-      recognition.start();
-      setTranscript('');
-      
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.start();
+      setIsRecording(true);
     } catch (err) {
-      // ADDED: Handle microphone permission errors
       console.error('Microphone access error:', err);
-      
+
       if (err.name === 'NotAllowedError') {
         alert('Microphone permission denied. Please:\n\n1. Tap the "AA" icon in Safari address bar\n2. Select "Website Settings"\n3. Enable Microphone\n4. Refresh page and try again');
       } else if (err.name === 'NotFoundError') {
@@ -328,24 +311,10 @@ function App() {
   };
 
   const stopRecording = () => {
-    if (recognitionRef.current) {
-      // CHANGED: Use the manual stop handler to prevent auto-restart
-      if (recognitionRef.current.stopManually) {
-        recognitionRef.current.stopManually();
-      } else {
-        recognitionRef.current.stop();
-      }
-      
-      setIsRecording(false);
-      
-      // ADDED: Short delay before showing edit screen to ensure transcript is captured
-      setTimeout(() => {
-        if (transcript.trim()) {
-          setEditingTranscript(true);
-          setTempTranscript(transcript);
-        }
-      }, 300);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
     }
+    setIsRecording(false);
   };
 
   const saveVoiceEntry = async () => {
@@ -362,7 +331,6 @@ function App() {
     };
     
     await updateCurrentBook(updated);
-    setTranscript('');
     setTempTranscript('');
     setEditingTranscript(false);
   };
@@ -765,7 +733,7 @@ function App() {
             {/* Recording UI */}
             <div className="fixed bottom-6 left-0 right-0 px-6 z-10">
               <div className="max-w-4xl mx-auto">
-                {!isRecording && !editingTranscript && (
+                {!isRecording && !isTranscribing && !editingTranscript && (
                   <button
                     onClick={startRecording}
                     className={`w-full ${buttonBg} text-white py-4 rounded-lg flex items-center justify-center gap-2 shadow-lg`}
@@ -777,7 +745,7 @@ function App() {
 
                 {isRecording && (
                   <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg`}>
-                    <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
                         <span className="font-medium">Recording...</span>
@@ -789,9 +757,17 @@ function App() {
                         Stop
                       </button>
                     </div>
-                    {transcript && (
-                      <p className="text-sm opacity-80 whitespace-pre-wrap">{transcript}</p>
-                    )}
+                  </div>
+                )}
+
+                {isTranscribing && (
+                  <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg flex items-center gap-3`}>
+                    <Loader2 size={20} className="animate-spin" />
+                    <span className="font-medium">
+                      {modelLoadProgress !== null
+                        ? `Loading speech model... ${modelLoadProgress}% (first time only)`
+                        : 'Transcribing...'}
+                    </span>
                   </div>
                 )}
 
@@ -808,7 +784,6 @@ function App() {
                         onClick={() => {
                           setEditingTranscript(false);
                           setTempTranscript('');
-                          setTranscript('');
                         }}
                         className={`flex-1 px-4 py-2 rounded-lg border ${borderColor}`}
                       >
