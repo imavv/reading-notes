@@ -1,7 +1,8 @@
 import { CreateMLCEngine } from '@mlc-ai/web-llm';
 
-// Use Qwen2-0.5B - smallest model, ~500MB, good for summarization
-const MODEL_ID = 'Qwen2-0.5B-Instruct-q4f16_1-MLC';
+// Qwen2.5-1.5B: better instruction-following than the previous 0.5B model,
+// while staying under iOS Safari's WebGPU tab memory ceiling (~1.6GB vram_required_MB)
+const MODEL_ID = 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC';
 
 let engine = null;
 let loadingProgress = 0;
