@@ -26,7 +26,12 @@ function AppContent() {
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const recognitionRef = useRef(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [modelLoadProgress, setModelLoadProgress] = useState(null);
+  const whisperWorkerRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const shouldTranscribeRef = useRef(true);
   const transcriptScrollRef = useRef(null);
 
   // Type mode states
@@ -105,6 +110,30 @@ function AppContent() {
       transcriptScrollRef.current.scrollTop = transcriptScrollRef.current.scrollHeight;
     }
   }, [transcript]);
+
+  // Whisper transcription worker - loaded once, lives for the app's lifetime
+  useEffect(() => {
+    const worker = new Worker(new URL('./whisperWorker.js', import.meta.url), { type: 'module' });
+
+    worker.onmessage = (event) => {
+      const { type } = event.data;
+      if (type === 'model-progress') {
+        const { progress } = event.data.data;
+        if (typeof progress === 'number') setModelLoadProgress(Math.round(progress));
+      } else if (type === 'model-ready') {
+        setModelLoadProgress(null);
+      } else if (type === 'result') {
+        setIsTranscribing(false);
+        setTranscript(event.data.text.trim());
+      } else if (type === 'error') {
+        setIsTranscribing(false);
+        alert(`Transcription failed: ${event.data.error}`);
+      }
+    };
+
+    whisperWorkerRef.current = worker;
+    return () => worker.terminate();
+  }, []);
 
   const checkAndMigrate = async () => {
     setShowMigrationModal(true);
@@ -281,92 +310,58 @@ function AppContent() {
     await loadBooks();
   };
 
+  // Decodes recorded audio to mono 16kHz Float32 samples, the format Whisper expects
+  const decodeAudioTo16kMono = async (blob) => {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await audioContext.decodeAudioData(arrayBuffer);
+    audioContext.close();
+
+    const targetSampleRate = 16000;
+    const offlineContext = new OfflineAudioContext(
+      1,
+      Math.ceil(decoded.duration * targetSampleRate),
+      targetSampleRate
+    );
+    const source = offlineContext.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offlineContext.destination);
+    source.start(0);
+
+    const resampled = await offlineContext.startRendering();
+    return resampled.getChannelData(0);
+  };
+
+  const transcribeRecording = async () => {
+    const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+    audioChunksRef.current = [];
+
+    if (blob.size === 0) return;
+
+    setIsTranscribing(true);
+    const audioData = await decodeAudioTo16kMono(blob);
+    whisperWorkerRef.current.postMessage({ type: 'transcribe', audio: audioData });
+  };
+
   const startRecording = async () => {
-    // Check if speech recognition is supported
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      alert('Speech recognition not supported in this browser. Please use Chrome or Safari.');
-      return;
-    }
-
     try {
-      // Request microphone permission FIRST using Navigator API
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(track => track.stop());
-
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
-
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-      recognition.maxAlternatives = 1;
-
-      let finalTranscript = '';
-      let isManualStop = false;
-
-      recognition.onstart = () => {
-        console.log('Recording started');
-        setIsRecording(true);
-      };
-
-      recognition.onresult = (event) => {
-        let interimTranscript = '';
-
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript + ' ';
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-
-        setTranscript(finalTranscript + interimTranscript);
-      };
-
-      recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-
-        if (event.error === 'no-speech') {
-          alert('No speech detected. Please try again and speak clearly.');
-        } else if (event.error === 'aborted') {
-          if (!isManualStop) {
-            alert('Recording was interrupted. Please try again.');
-          }
-        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          alert('Microphone access denied. Please:\n\n1. Go to iPhone Settings → Safari → Microphone → Allow\n2. Go to iPhone Settings → Privacy & Security → Speech Recognition → Enable Safari\n3. Refresh this page and try again');
-        } else {
-          alert(`Recording error: ${event.error}. Please try again.`);
-        }
-
-        setIsRecording(false);
-      };
-
-      recognition.onend = () => {
-        console.log('Recording ended');
-
-        if (isRecording && !isManualStop && recognitionRef.current) {
-          try {
-            recognition.start();
-          } catch (err) {
-            console.error('Failed to restart:', err);
-            setIsRecording(false);
-          }
-        } else {
-          setIsRecording(false);
-        }
-      };
-
-      recognitionRef.current = recognition;
-
-      recognitionRef.current.stopManually = () => {
-        isManualStop = true;
-        recognition.stop();
-      };
-
-      recognition.start();
+      audioChunksRef.current = [];
       setTranscript('');
 
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop());
+        if (shouldTranscribeRef.current) transcribeRecording();
+      };
+
+      mediaRecorderRef.current = mediaRecorder;
+      shouldTranscribeRef.current = true;
+      mediaRecorder.start();
+      setIsRecording(true);
     } catch (err) {
       console.error('Microphone access error:', err);
 
@@ -383,15 +378,10 @@ function AppContent() {
   };
 
   const stopRecording = () => {
-    if (recognitionRef.current) {
-      if (recognitionRef.current.stopManually) {
-        recognitionRef.current.stopManually();
-      } else {
-        recognitionRef.current.stop();
-      }
-
-      setIsRecording(false);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
     }
+    setIsRecording(false);
   };
 
   const saveVoiceEntry = async () => {
@@ -983,8 +973,10 @@ function AppContent() {
           <div className="flex items-center justify-between mb-8">
             <button
               onClick={() => {
+                shouldTranscribeRef.current = false;
                 stopRecording();
                 setTranscript('');
+                setIsTranscribing(false);
                 setCurrentView('book');
               }}
               className="text-lg opacity-70 hover:opacity-100"
@@ -1000,15 +992,22 @@ function AppContent() {
                     <span className="text-sm font-medium text-red-500">Recording</span>
                   </div>
                 </>
+              ) : isTranscribing ? (
+                <div className="flex items-center gap-2">
+                  <Loader2 size={18} className="animate-spin text-blue-500" />
+                  <span className="text-sm font-medium text-blue-500">
+                    {modelLoadProgress !== null ? `Loading model... ${modelLoadProgress}%` : 'Transcribing...'}
+                  </span>
+                </div>
               ) : (
                 <Mic size={20} className="opacity-50" />
               )}
             </div>
             <button
               onClick={saveVoiceEntry}
-              disabled={!transcript.trim()}
+              disabled={!transcript.trim() || isTranscribing}
               className={`text-lg font-medium ${
-                transcript.trim()
+                transcript.trim() && !isTranscribing
                   ? 'text-green-500 hover:text-green-400'
                   : 'opacity-30 cursor-not-allowed'
               }`}
@@ -1023,7 +1022,7 @@ function AppContent() {
               ref={transcriptScrollRef}
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}
-              placeholder="Tap the microphone to start recording..."
+              placeholder={isTranscribing ? 'Transcribing your recording...' : 'Tap the microphone to start recording...'}
               className={`w-full h-full min-h-[70vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
               style={{
                 background: 'transparent',
@@ -1035,19 +1034,26 @@ function AppContent() {
           {/* Recording Controls - Fixed at bottom */}
           <div className="fixed bottom-8 left-0 right-0 px-6">
             <div className="max-w-4xl mx-auto flex justify-center">
-              {!isRecording ? (
-                <button
-                  onClick={startRecording}
-                  className="bg-blue-500 hover:bg-blue-600 text-white p-6 rounded-full shadow-lg transition-all"
-                >
-                  <Mic size={32} />
-                </button>
-              ) : (
+              {isRecording ? (
                 <button
                   onClick={stopRecording}
                   className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full shadow-lg transition-all font-medium"
                 >
                   Stop Recording
+                </button>
+              ) : isTranscribing ? (
+                <button
+                  disabled
+                  className="bg-blue-500 text-white p-6 rounded-full shadow-lg opacity-50 cursor-not-allowed"
+                >
+                  <Loader2 size={32} className="animate-spin" />
+                </button>
+              ) : (
+                <button
+                  onClick={startRecording}
+                  className="bg-blue-500 hover:bg-blue-600 text-white p-6 rounded-full shadow-lg transition-all"
+                >
+                  <Mic size={32} />
                 </button>
               )}
             </div>
