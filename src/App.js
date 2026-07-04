@@ -40,6 +40,7 @@ function AppContent() {
   // Editing states
   const [editingVoiceText, setEditingVoiceText] = useState('');
   const [editingTypeId, setEditingTypeId] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // LLM states
   const [llmProgress, setLlmProgress] = useState(0);
@@ -385,44 +386,49 @@ function AppContent() {
   };
 
   const saveVoiceEntry = async () => {
-    if (!transcript.trim()) return;
+    if (!transcript.trim() || isSaving) return;
+    setIsSaving(true);
 
-    const entry = {
-      id: Date.now().toString(),
-      rawText: transcript,
-      timestamp: Date.now(),
-      summary: null,
-      title: null
-    };
-
-    if (isCloudMode) {
-      const cloudEntry = await dataService.addVoiceEntry(currentBook.id, entry, user.id);
-      if (cloudEntry) {
-        entry.id = cloudEntry.id;
-        entry.timestamp = cloudEntry.timestamp;
-      }
-      await loadBooks();
-      // Refresh currentBook
-      const refreshedBooks = await dataService.getAllBooks(user.id);
-      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
-      if (refreshedBook) {
-        setCurrentBook(refreshedBook);
-      }
-    } else {
-      const updated = {
-        voiceEntries: [entry, ...currentBook.voiceEntries]
+    try {
+      const entry = {
+        id: Date.now().toString(),
+        rawText: transcript,
+        timestamp: Date.now(),
+        summary: null,
+        title: null
       };
-      await updateCurrentBook(updated);
+
+      if (isCloudMode) {
+        const cloudEntry = await dataService.addVoiceEntry(currentBook.id, entry, user.id);
+        if (cloudEntry) {
+          entry.id = cloudEntry.id;
+          entry.timestamp = cloudEntry.timestamp;
+        }
+        await loadBooks();
+        // Refresh currentBook
+        const refreshedBooks = await dataService.getAllBooks(user.id);
+        const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+        if (refreshedBook) {
+          setCurrentBook(refreshedBook);
+        }
+      } else {
+        const updated = {
+          voiceEntries: [entry, ...currentBook.voiceEntries]
+        };
+        await updateCurrentBook(updated);
+      }
+
+      setTranscript('');
+
+      // Show summarization prompt
+      setPendingVoiceEntry(entry);
+      setShowSummarizePrompt(true);
+
+      // Return to book view after saving
+      setCurrentView('book');
+    } finally {
+      setIsSaving(false);
     }
-
-    setTranscript('');
-
-    // Show summarization prompt
-    setPendingVoiceEntry(entry);
-    setShowSummarizePrompt(true);
-
-    // Return to book view after saving
-    setCurrentView('book');
   };
 
 
@@ -448,7 +454,7 @@ function AppContent() {
 
   const addTypeEntry = async () => {
     const text = newTypeText.trim();
-    if (!text) return;
+    if (!text || isSaving) return;
 
     const wordCount = text.split(/\s+/).length;
     if (wordCount > 10) {
@@ -456,32 +462,37 @@ function AppContent() {
       return;
     }
 
-    const entry = {
-      id: Date.now().toString(),
-      text,
-      timestamp: Date.now()
-    };
-
-    if (isCloudMode) {
-      await dataService.addTypeEntry(currentBook.id, entry, user.id);
-      await loadBooks();
-      // Refresh currentBook
-      const refreshedBooks = await dataService.getAllBooks(user.id);
-      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
-      if (refreshedBook) {
-        setCurrentBook(refreshedBook);
-      }
-    } else {
-      const updated = {
-        typeEntries: [entry, ...currentBook.typeEntries]
+    setIsSaving(true);
+    try {
+      const entry = {
+        id: Date.now().toString(),
+        text,
+        timestamp: Date.now()
       };
-      await updateCurrentBook(updated);
+
+      if (isCloudMode) {
+        await dataService.addTypeEntry(currentBook.id, entry, user.id);
+        await loadBooks();
+        // Refresh currentBook
+        const refreshedBooks = await dataService.getAllBooks(user.id);
+        const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+        if (refreshedBook) {
+          setCurrentBook(refreshedBook);
+        }
+      } else {
+        const updated = {
+          typeEntries: [entry, ...currentBook.typeEntries]
+        };
+        await updateCurrentBook(updated);
+      }
+
+      setNewTypeText('');
+
+      // Return to book view after saving
+      setCurrentView('book');
+    } finally {
+      setIsSaving(false);
     }
-
-    setNewTypeText('');
-
-    // Return to book view after saving
-    setCurrentView('book');
   };
 
   const startEditType = (entry) => {
@@ -492,7 +503,7 @@ function AppContent() {
 
   const saveEditType = async () => {
     const text = newTypeText.trim();
-    if (!text) return;
+    if (!text || isSaving) return;
 
     const wordCount = text.split(/\s+/).length;
     if (wordCount > 10) {
@@ -500,29 +511,34 @@ function AppContent() {
       return;
     }
 
-    if (isCloudMode) {
-      await dataService.updateTypeEntry(editingTypeId, { text }, user.id);
-      await loadBooks();
-      // Refresh currentBook
-      const refreshedBooks = await dataService.getAllBooks(user.id);
-      const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
-      if (refreshedBook) {
-        setCurrentBook(refreshedBook);
+    setIsSaving(true);
+    try {
+      if (isCloudMode) {
+        await dataService.updateTypeEntry(editingTypeId, { text }, user.id);
+        await loadBooks();
+        // Refresh currentBook
+        const refreshedBooks = await dataService.getAllBooks(user.id);
+        const refreshedBook = refreshedBooks.find(b => b.id === currentBook.id);
+        if (refreshedBook) {
+          setCurrentBook(refreshedBook);
+        }
+      } else {
+        const updated = {
+          typeEntries: currentBook.typeEntries.map(e =>
+            e.id === editingTypeId
+              ? { ...e, text, timestamp: Date.now() }
+              : e
+          )
+        };
+        await updateCurrentBook(updated);
       }
-    } else {
-      const updated = {
-        typeEntries: currentBook.typeEntries.map(e =>
-          e.id === editingTypeId
-            ? { ...e, text, timestamp: Date.now() }
-            : e
-        )
-      };
-      await updateCurrentBook(updated);
-    }
 
-    setEditingTypeId(null);
-    setNewTypeText('');
-    setCurrentView('book');
+      setEditingTypeId(null);
+      setNewTypeText('');
+      setCurrentView('book');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
 
@@ -1005,14 +1021,14 @@ function AppContent() {
             </div>
             <button
               onClick={saveVoiceEntry}
-              disabled={!transcript.trim() || isTranscribing}
+              disabled={!transcript.trim() || isTranscribing || isSaving}
               className={`text-lg font-medium ${
-                transcript.trim() && !isTranscribing
+                transcript.trim() && !isTranscribing && !isSaving
                   ? 'text-green-500 hover:text-green-400'
                   : 'opacity-30 cursor-not-allowed'
               }`}
             >
-              Save
+              {isSaving ? 'Saving...' : 'Save'}
             </button>
           </div>
 
@@ -1095,14 +1111,14 @@ function AppContent() {
             </div>
             <button
               onClick={isEditMode ? saveEditType : addTypeEntry}
-              disabled={!newTypeText.trim() || isOverLimit}
+              disabled={!newTypeText.trim() || isOverLimit || isSaving}
               className={`text-lg font-medium ${
-                newTypeText.trim() && !isOverLimit
+                newTypeText.trim() && !isOverLimit && !isSaving
                   ? 'text-green-500 hover:text-green-400'
                   : 'opacity-30 cursor-not-allowed'
               }`}
             >
-              Save
+              {isSaving ? 'Saving...' : 'Save'}
             </button>
           </div>
 
