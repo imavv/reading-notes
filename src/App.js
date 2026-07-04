@@ -599,15 +599,15 @@ function AppContent() {
 
     setIsSummarizing(true);
     try {
-      const [summary, title] = await Promise.all([
-        generateSummary(entry.rawText),
-        generateTitle(entry.rawText)
-      ]);
+      // The engine only supports one generation at a time - running these
+      // concurrently via Promise.all fails against the single WebGPU pipeline.
+      const summary = await generateSummary(entry.rawText);
+      const title = await generateTitle(entry.rawText);
 
       return { summary, title };
     } catch (error) {
       console.error('Failed to summarize:', error);
-      alert('Failed to generate summary. Please try again.');
+      alert(`Failed to generate summary: ${error.message || error}`);
       return null;
     } finally {
       setIsSummarizing(false);
