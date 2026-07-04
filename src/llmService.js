@@ -71,19 +71,31 @@ export const generateSummary = async (rawText) => {
     throw new Error('LLM not initialized. Call initLLM first.');
   }
 
-  const prompt = `Summarize the following book notes into concise bullet points. Only output the bullet points, no introduction or conclusion (make sure the points are never redundant, always Mutually Exclusive Collectively Exhaustive, and follows a coherent logic/chronological order based on the raw transcript):
+  const prompt = `Turn these notes into 3 to 6 bullet points. Rules:
+- Each bullet is one short sentence.
+- Each bullet covers a different point - don't repeat the same idea twice.
+- Keep the same order as the notes.
+- Output only the bullet points, nothing else.
 
+Example:
+Notes: "So chapter three was about how the character finally decides to leave his job. He's been unhappy for years but keeps rationalizing why he stays. The turning point is when his mentor dies suddenly and he realizes he's been wasting time."
+Bullets:
+- The character has been unhappy at his job for years but keeps rationalizing staying.
+- His mentor's sudden death is the turning point.
+- He realizes he's been wasting time and decides to leave.
+
+Now do the same for these notes:
 ${rawText}`;
 
   try {
     const response = await engine.chat.completions.create({
       messages: [
-        { role: 'system', content: 'You are an expert literary analyst who extracts deep insights from reading notes'},
+        { role: 'system', content: "You turn short spoken notes about a book into clear bullet points. You only use information that is actually in the notes - never add outside facts or your own opinions." },
         { role: 'user', content: prompt }
       ],
       temperature: 0.5,
       max_tokens: 500,
-      frequency_penalty: 1.0,
+      frequency_penalty: 0.3,
     });
 
     return response.choices[0].message.content.trim();
