@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-<<<<<<< HEAD
-import { Mic, Plus, Search, Moon, Sun, Edit2, Check, Trash2, Save, Loader2 } from 'lucide-react';
-=======
 import { Mic, Plus, Search, Moon, Sun, Edit2, Trash2, Sparkles, Loader2, Download, LogIn, LogOut, User, Cloud, CloudOff, Menu, X, WifiOff } from 'lucide-react';
 import { initLLM, generateSummary, generateTitle, isModelLoaded, isModelLoading } from './llmService';
 import { AuthProvider, useAuth } from './AuthContext';
 import { dataService, migrateLocalToCloud } from './dataService';
->>>>>>> origin/integration/bookworm-full
 
 function AppContent() {
   const { user, loading: authLoading, signInWithGoogle, signOut, isConfigured } = useAuth();
@@ -29,16 +25,6 @@ function AppContent() {
 
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
-<<<<<<< HEAD
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [modelLoadProgress, setModelLoadProgress] = useState(null);
-  const [editingTranscript, setEditingTranscript] = useState(false);
-  const [tempTranscript, setTempTranscript] = useState('');
-  const whisperWorkerRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
-  
-=======
   const [transcript, setTranscript] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [modelLoadProgress, setModelLoadProgress] = useState(null);
@@ -48,7 +34,6 @@ function AppContent() {
   const shouldTranscribeRef = useRef(true);
   const transcriptScrollRef = useRef(null);
 
->>>>>>> origin/integration/bookworm-full
   // Type mode states
   const [newTypeText, setNewTypeText] = useState('');
 
@@ -88,8 +73,6 @@ function AppContent() {
     localStorage.setItem('darkMode', darkMode);
   }, [darkMode]);
 
-<<<<<<< HEAD
-=======
   // Track online/offline status for PWA
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -129,7 +112,6 @@ function AppContent() {
   }, [transcript]);
 
   // Whisper transcription worker - loaded once, lives for the app's lifetime
->>>>>>> origin/integration/bookworm-full
   useEffect(() => {
     const worker = new Worker(new URL('./whisperWorker.js', import.meta.url), { type: 'module' });
 
@@ -142,12 +124,7 @@ function AppContent() {
         setModelLoadProgress(null);
       } else if (type === 'result') {
         setIsTranscribing(false);
-<<<<<<< HEAD
-        setTempTranscript(event.data.text.trim());
-        setEditingTranscript(true);
-=======
         setTranscript(event.data.text.trim());
->>>>>>> origin/integration/bookworm-full
       } else if (type === 'error') {
         setIsTranscribing(false);
         alert(`Transcription failed: ${event.data.error}`);
@@ -158,8 +135,6 @@ function AppContent() {
     return () => worker.terminate();
   }, []);
 
-<<<<<<< HEAD
-=======
   const checkAndMigrate = async () => {
     setShowMigrationModal(true);
     setMigrationProgress('Checking for local data to migrate...');
@@ -184,7 +159,6 @@ function AppContent() {
     loadBooks();
   };
 
->>>>>>> origin/integration/bookworm-full
   const loadBooks = async () => {
     const allBooks = await dataService.getAllBooks(user?.id);
     const sorted = allBooks.sort((a, b) => b.lastEdited - a.lastEdited);
@@ -373,10 +347,7 @@ function AppContent() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
-<<<<<<< HEAD
-=======
       setTranscript('');
->>>>>>> origin/integration/bookworm-full
 
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorder.ondataavailable = (e) => {
@@ -384,18 +355,11 @@ function AppContent() {
       };
       mediaRecorder.onstop = () => {
         stream.getTracks().forEach(track => track.stop());
-<<<<<<< HEAD
-        transcribeRecording();
-      };
-
-      mediaRecorderRef.current = mediaRecorder;
-=======
         if (shouldTranscribeRef.current) transcribeRecording();
       };
 
       mediaRecorderRef.current = mediaRecorder;
       shouldTranscribeRef.current = true;
->>>>>>> origin/integration/bookworm-full
       mediaRecorder.start();
       setIsRecording(true);
     } catch (err) {
@@ -430,16 +394,6 @@ function AppContent() {
       summary: null,
       title: null
     };
-<<<<<<< HEAD
-    
-    const updated = {
-      voiceEntries: [entry, ...currentBook.voiceEntries]
-    };
-    
-    await updateCurrentBook(updated);
-    setTempTranscript('');
-    setEditingTranscript(false);
-=======
 
     if (isCloudMode) {
       const cloudEntry = await dataService.addVoiceEntry(currentBook.id, entry, user.id);
@@ -469,7 +423,6 @@ function AppContent() {
 
     // Return to book view after saving
     setCurrentView('book');
->>>>>>> origin/integration/bookworm-full
   };
 
 
@@ -1437,74 +1390,6 @@ function AppContent() {
             {/* Add Voice Note Button */}
             <div className="fixed bottom-6 left-0 right-0 px-6 z-10">
               <div className="max-w-4xl mx-auto">
-<<<<<<< HEAD
-                {!isRecording && !isTranscribing && !editingTranscript && (
-                  <button
-                    onClick={startRecording}
-                    className={`w-full ${buttonBg} text-white py-4 rounded-lg flex items-center justify-center gap-2 shadow-lg`}
-                  >
-                    <Mic size={24} />
-                    Start Recording
-                  </button>
-                )}
-
-                {isRecording && (
-                  <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                        <span className="font-medium">Recording...</span>
-                      </div>
-                      <button
-                        onClick={stopRecording}
-                        className={`${buttonBg} text-white px-6 py-2 rounded-lg`}
-                      >
-                        Stop
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {isTranscribing && (
-                  <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg flex items-center gap-3`}>
-                    <Loader2 size={20} className="animate-spin" />
-                    <span className="font-medium">
-                      {modelLoadProgress !== null
-                        ? `Loading speech model... ${modelLoadProgress}% (first time only)`
-                        : 'Transcribing...'}
-                    </span>
-                  </div>
-                )}
-
-                {editingTranscript && (
-                  <div className={`${cardBg} border ${borderColor} rounded-lg p-4 shadow-lg`}>
-                    <textarea
-                      value={tempTranscript}
-                      onChange={(e) => setTempTranscript(e.target.value)}
-                      className={`w-full ${inputBg} border ${borderColor} rounded-lg p-3 mb-3 min-h-[120px]`}
-                      placeholder="Edit your transcript..."
-                    />
-                    <div className="flex gap-3">
-                      <button
-                        onClick={() => {
-                          setEditingTranscript(false);
-                          setTempTranscript('');
-                        }}
-                        className={`flex-1 px-4 py-2 rounded-lg border ${borderColor}`}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={saveVoiceEntry}
-                        className={`flex-1 ${buttonBg} text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2`}
-                      >
-                        <Check size={20} />
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                )}
-=======
                 <button
                   onClick={() => {
                     setCurrentView('voiceRecording');
@@ -1515,7 +1400,6 @@ function AppContent() {
                   <Mic size={24} />
                   Add Voice Note
                 </button>
->>>>>>> origin/integration/bookworm-full
               </div>
             </div>
           </div>
