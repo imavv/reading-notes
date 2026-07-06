@@ -155,6 +155,24 @@ const updateBookTimestampCloud = async (bookId) => {
     .eq('id', bookId);
 };
 
+// Supabase: Update book title/author
+const updateBookInfoCloud = async (bookId, updates) => {
+  if (!isSupabaseConfigured()) return;
+
+  const updateData = { last_edited: new Date().toISOString() };
+  if (updates.title !== undefined) updateData.title = updates.title;
+  if (updates.author !== undefined) updateData.author = updates.author;
+
+  const { error } = await supabase
+    .from('books')
+    .update(updateData)
+    .eq('id', bookId);
+
+  if (error) {
+    console.error('Error updating book info:', error);
+  }
+};
+
 // Supabase: Delete book (cascade deletes entries)
 const deleteBookCloud = async (bookId) => {
   if (!isSupabaseConfigured()) return;
@@ -453,6 +471,15 @@ export const dataService = {
       return;
     }
     await saveBookLocal(book);
+  },
+
+  // Update a book's title/author
+  updateBookInfo: async (bookId, updates, userId) => {
+    if (userId && isSupabaseConfigured()) {
+      await updateBookInfoCloud(bookId, updates);
+      return;
+    }
+    // Local mode handled in App.js via saveBook
   },
 
   // Delete a book

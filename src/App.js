@@ -15,6 +15,9 @@ function AppContent() {
   const [showAddBook, setShowAddBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState('');
   const [newBookAuthor, setNewBookAuthor] = useState('');
+  const [editingBook, setEditingBook] = useState(null);
+  const [editBookTitle, setEditBookTitle] = useState('');
+  const [editBookAuthor, setEditBookAuthor] = useState('');
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'type'
 
   // Voice detail view
@@ -39,6 +42,7 @@ function AppContent() {
 
   // Editing states
   const [editingVoiceText, setEditingVoiceText] = useState('');
+  const [editingVoiceTitle, setEditingVoiceTitle] = useState('');
   const [editingTypeId, setEditingTypeId] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -166,8 +170,9 @@ function AppContent() {
     setBooks(sorted);
   };
 
-  const checkDuplicate = (title, author) => {
+  const checkDuplicate = (title, author, excludeId = null) => {
     return books.some(book =>
+      book.id !== excludeId &&
       book.title.toLowerCase().trim() === title.toLowerCase().trim() &&
       book.author.toLowerCase().trim() === author.toLowerCase().trim()
     );
@@ -204,9 +209,52 @@ function AppContent() {
     setActiveTab('voice');
   };
 
+  const openEditBook = (book, e) => {
+    e.stopPropagation();
+    setEditingBook(book);
+    setEditBookTitle(book.title);
+    setEditBookAuthor(book.author);
+  };
+
+  const saveBookEdit = async () => {
+    const title = editBookTitle.trim();
+    const author = editBookAuthor.trim();
+
+    if (!title || !author) {
+      alert('Please enter both book title and author name');
+      return;
+    }
+
+    if (checkDuplicate(title, author, editingBook.id)) {
+      alert('This book and author combination already exists!');
+      return;
+    }
+
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+      if (isCloudMode) {
+        await dataService.updateBookInfo(editingBook.id, { title, author }, user.id);
+      } else {
+        const updated = { ...editingBook, title, author, lastEdited: Date.now() };
+        await dataService.saveBook(updated, user?.id);
+      }
+
+      await loadBooks();
+      // Keep an open book view in sync if you're editing the book you're currently in
+      if (currentBook?.id === editingBook.id) {
+        setCurrentBook({ ...currentBook, title, author });
+      }
+      setEditingBook(null);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const openVoiceDetail = (entry) => {
     setCurrentVoiceEntryId(entry.id);
     setEditingVoiceText(entry.rawText);
+    setEditingVoiceTitle(entry.title || '');
     setCurrentView('voiceDetail');
     setVoiceDetailTab('raw');
   };
@@ -214,8 +262,10 @@ function AppContent() {
   const saveVoiceDetail = async () => {
     if (!editingVoiceText.trim()) return;
 
+    const title = editingVoiceTitle.trim() || null;
+
     if (isCloudMode) {
-      await dataService.updateVoiceEntry(currentVoiceEntryId, { rawText: editingVoiceText }, user.id);
+      await dataService.updateVoiceEntry(currentVoiceEntryId, { rawText: editingVoiceText, title }, user.id);
       await loadBooks();
       // Refresh currentBook - currentVoiceEntry will auto-update since it's derived
       const refreshedBooks = await dataService.getAllBooks(user.id);
@@ -227,7 +277,7 @@ function AppContent() {
       const updated = {
         voiceEntries: currentBook.voiceEntries.map(e =>
           e.id === currentVoiceEntryId
-            ? { ...e, rawText: editingVoiceText, timestamp: Date.now() }
+            ? { ...e, rawText: editingVoiceText, title, timestamp: Date.now() }
             : e
         )
       };
@@ -887,12 +937,20 @@ function AppContent() {
                 onClick={() => openBook(book)}
                 className={`${cardBg} border ${borderColor} rounded-lg p-6 cursor-pointer hover:shadow-lg transition-shadow relative group`}
               >
-                <button
-                  onClick={(e) => handleDeleteBook(book.id, e)}
-                  className="absolute top-4 right-4 p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white"
-                >
-                  <Trash2 size={18} />
-                </button>
+                <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={(e) => openEditBook(book, e)}
+                    className="p-2 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
+                  >
+                    <Edit2 size={18} />
+                  </button>
+                  <button
+                    onClick={(e) => handleDeleteBook(book.id, e)}
+                    className="p-2 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
                 <h2 className="text-xl font-semibold mb-1">{book.title}</h2>
                 <p className="text-sm opacity-70 mb-2">by {book.author}</p>
                 <p className="text-sm opacity-60 mb-3">{formatDate(book.lastEdited)}</p>
@@ -945,6 +1003,47 @@ function AppContent() {
                   className={`flex-1 ${buttonBg} text-white px-4 py-2 rounded-lg`}
                 >
                   Create
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Edit Book Modal */}
+        {editingBook && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className={`${cardBg} rounded-lg p-6 w-full max-w-md`}>
+              <h2 className="text-xl font-semibold mb-4">Edit Book</h2>
+              <input
+                type="text"
+                value={editBookTitle}
+                onChange={(e) => setEditBookTitle(e.target.value)}
+                placeholder="Book title"
+                className={`w-full px-4 py-3 rounded-lg border ${borderColor} ${inputBg} mb-3`}
+                autoFocus
+              />
+              <input
+                type="text"
+                value={editBookAuthor}
+                onChange={(e) => setEditBookAuthor(e.target.value)}
+                placeholder="Author name"
+                className={`w-full px-4 py-3 rounded-lg border ${borderColor} ${inputBg} mb-4`}
+                onKeyPress={(e) => e.key === 'Enter' && saveBookEdit()}
+              />
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setEditingBook(null)}
+                  disabled={isSaving}
+                  className={`flex-1 px-4 py-2 rounded-lg border ${borderColor} disabled:opacity-50`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveBookEdit}
+                  disabled={isSaving}
+                  className={`flex-1 ${buttonBg} text-white px-4 py-2 rounded-lg disabled:opacity-50`}
+                >
+                  {isSaving ? 'Saving...' : 'Save'}
                 </button>
               </div>
             </div>
@@ -1163,6 +1262,7 @@ function AppContent() {
             <button
               onClick={() => {
                 setEditingVoiceText(currentVoiceEntry.rawText);
+                setEditingVoiceTitle(currentVoiceEntry.title || '');
                 setCurrentView('book');
                 setCurrentVoiceEntryId(null);
                 setVoiceDetailTab('raw');
@@ -1222,16 +1322,26 @@ function AppContent() {
           {voiceDetailTab === 'raw' ? (
             // Raw Transcript Tab - Always editable
             <div className="min-h-[60vh]">
-              <textarea
-                value={editingVoiceText}
-                onChange={(e) => setEditingVoiceText(e.target.value)}
-                placeholder="Edit your voice note..."
-                className={`w-full h-full min-h-[60vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
+              <input
+                type="text"
+                value={editingVoiceTitle}
+                onChange={(e) => setEditingVoiceTitle(e.target.value)}
+                placeholder="Add a title (optional)..."
+                className={`w-full ${inputBg} border-0 border-b ${borderColor} text-lg font-semibold pb-3 mb-4 focus:outline-none focus:ring-0`}
                 style={{
                   background: 'transparent',
                   fontFamily: 'inherit'
                 }}
-                autoFocus
+              />
+              <textarea
+                value={editingVoiceText}
+                onChange={(e) => setEditingVoiceText(e.target.value)}
+                placeholder="Edit your voice note..."
+                className={`w-full h-full min-h-[50vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
+                style={{
+                  background: 'transparent',
+                  fontFamily: 'inherit'
+                }}
               />
             </div>
           ) : (
