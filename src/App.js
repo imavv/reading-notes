@@ -36,6 +36,10 @@ function AppContent() {
   const audioChunksRef = useRef([]);
   const shouldTranscribeRef = useRef(true);
   const transcriptScrollRef = useRef(null);
+  // Where a transcription result should land: 'new' -> transcript state (voiceRecording view),
+  // 'edit' -> editingVoiceText state (resuming a saved note). Always appended for 'edit'.
+  const recordingTargetRef = useRef('new');
+  const isAppendingRef = useRef(false);
 
   // Type mode states
   const [newTypeText, setNewTypeText] = useState('');
@@ -129,7 +133,10 @@ function AppContent() {
         setModelLoadProgress(null);
       } else if (type === 'result') {
         setIsTranscribing(false);
-        setTranscript(event.data.text.trim());
+        const newText = event.data.text.trim();
+        const append = isAppendingRef.current;
+        const setter = recordingTargetRef.current === 'edit' ? setEditingVoiceText : setTranscript;
+        setter(prev => (append && prev.trim()) ? `${prev.trim()} ${newText}` : newText);
       } else if (type === 'error') {
         setIsTranscribing(false);
         alert(`Transcription failed: ${event.data.error}`);
@@ -394,11 +401,13 @@ function AppContent() {
     whisperWorkerRef.current.postMessage({ type: 'transcribe', audio: audioData });
   };
 
-  const startRecording = async () => {
+  const startRecording = async (target = 'new', append = false) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
-      setTranscript('');
+      recordingTargetRef.current = target;
+      isAppendingRef.current = append;
+      if (target === 'new' && !append) setTranscript('');
 
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorder.ondataavailable = (e) => {
@@ -1081,9 +1090,9 @@ function AppContent() {
   // Voice Recording View - Full screen blank page
   if (currentView === 'voiceRecording') {
     return (
-      <div className={`min-h-screen ${theme} transition-colors`}>
+      <div className={`min-h-screen ${theme} transition-colors flex flex-col`}>
         <OfflineBanner />
-        <div className="max-w-4xl mx-auto p-6">
+        <div className="max-w-4xl mx-auto p-6 w-full flex flex-col flex-1 min-h-0">
           {/* Header */}
           <div className="flex items-center justify-between mb-8">
             <button
@@ -1131,47 +1140,62 @@ function AppContent() {
             </button>
           </div>
 
-          {/* Main Content Area */}
-          <div className="min-h-[70vh]">
-            <textarea
-              ref={transcriptScrollRef}
-              value={transcript}
-              onChange={(e) => setTranscript(e.target.value)}
-              placeholder={isTranscribing ? 'Transcribing your recording...' : 'Tap the microphone to start recording...'}
-              className={`w-full h-full min-h-[70vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
-              style={{
-                background: 'transparent',
-                fontFamily: 'inherit'
-              }}
-            />
-          </div>
+          {/* Main Content Area - fills remaining screen height */}
+          <textarea
+            ref={transcriptScrollRef}
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+            placeholder={isTranscribing ? 'Transcribing your recording...' : 'Tap the microphone to start recording...'}
+            className={`w-full flex-1 min-h-0 ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0 pb-24`}
+            style={{
+              background: 'transparent',
+              fontFamily: 'inherit'
+            }}
+          />
+        </div>
 
-          {/* Recording Controls - Fixed at bottom */}
-          <div className="fixed bottom-8 left-0 right-0 px-6">
-            <div className="max-w-4xl mx-auto flex justify-center">
-              {isRecording ? (
+        {/* Recording Controls - Fixed at bottom */}
+        <div className="fixed bottom-8 left-0 right-0 px-6">
+          <div className="max-w-4xl mx-auto flex justify-center gap-3">
+            {isRecording ? (
+              <button
+                onClick={stopRecording}
+                className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full shadow-lg transition-all font-medium"
+              >
+                Stop Recording
+              </button>
+            ) : isTranscribing ? (
+              <button
+                disabled
+                className="bg-blue-500 text-white p-6 rounded-full shadow-lg opacity-50 cursor-not-allowed"
+              >
+                <Loader2 size={32} className="animate-spin" />
+              </button>
+            ) : transcript.trim() ? (
+              <>
                 <button
-                  onClick={stopRecording}
-                  className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full shadow-lg transition-all font-medium"
+                  onClick={() => startRecording('new', true)}
+                  className={`${buttonBg} text-white px-6 py-4 rounded-full shadow-lg transition-all font-medium flex items-center justify-center gap-2`}
                 >
-                  Stop Recording
+                  <Mic size={20} />
+                  Resume
                 </button>
-              ) : isTranscribing ? (
                 <button
-                  disabled
-                  className="bg-blue-500 text-white p-6 rounded-full shadow-lg opacity-50 cursor-not-allowed"
+                  onClick={() => startRecording('new', false)}
+                  className={`${cardBg} border ${borderColor} px-6 py-4 rounded-full shadow-lg transition-all font-medium flex items-center justify-center gap-2`}
                 >
-                  <Loader2 size={32} className="animate-spin" />
+                  <Mic size={20} />
+                  New Recording
                 </button>
-              ) : (
-                <button
-                  onClick={startRecording}
-                  className="bg-blue-500 hover:bg-blue-600 text-white p-6 rounded-full shadow-lg transition-all"
-                >
-                  <Mic size={32} />
-                </button>
-              )}
-            </div>
+              </>
+            ) : (
+              <button
+                onClick={() => startRecording('new', false)}
+                className="bg-blue-500 hover:bg-blue-600 text-white p-6 rounded-full shadow-lg transition-all"
+              >
+                <Mic size={32} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1254,13 +1278,16 @@ function AppContent() {
   // Voice Detail View
   if (currentView === 'voiceDetail') {
     return (
-      <div className={`min-h-screen ${theme} transition-colors`}>
+      <div className={`min-h-screen ${theme} transition-colors flex flex-col`}>
         <OfflineBanner />
-        <div className="max-w-4xl mx-auto p-6">
+        <div className="max-w-4xl mx-auto p-6 w-full flex flex-col flex-1 min-h-0">
           {/* Header */}
           <div className="flex items-center justify-between mb-8">
             <button
               onClick={() => {
+                shouldTranscribeRef.current = false;
+                stopRecording();
+                setIsTranscribing(false);
                 setEditingVoiceText(currentVoiceEntry.rawText);
                 setEditingVoiceTitle(currentVoiceEntry.title || '');
                 setCurrentView('book');
@@ -1320,8 +1347,8 @@ function AppContent() {
           </div>
 
           {voiceDetailTab === 'raw' ? (
-            // Raw Transcript Tab - Always editable
-            <div className="min-h-[60vh]">
+            // Raw Transcript Tab - Always editable, fills remaining screen height
+            <div className="flex flex-col flex-1 min-h-0">
               <input
                 type="text"
                 value={editingVoiceTitle}
@@ -1337,7 +1364,7 @@ function AppContent() {
                 value={editingVoiceText}
                 onChange={(e) => setEditingVoiceText(e.target.value)}
                 placeholder="Edit your voice note..."
-                className={`w-full h-full min-h-[50vh] ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0`}
+                className={`w-full flex-1 min-h-0 ${inputBg} border-0 text-xl leading-relaxed resize-none focus:outline-none focus:ring-0 pb-24`}
                 style={{
                   background: 'transparent',
                   fontFamily: 'inherit'
@@ -1396,6 +1423,43 @@ function AppContent() {
             </div>
           )}
         </div>
+
+        {/* Resume Recording Controls - Fixed at bottom, only in the raw/edit tab */}
+        {voiceDetailTab === 'raw' && (
+          <div className="fixed bottom-8 left-0 right-0 px-6">
+            <div className="max-w-4xl mx-auto flex justify-center items-center gap-3">
+              {isRecording ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                    <span className="text-sm font-medium text-red-500">Recording</span>
+                  </div>
+                  <button
+                    onClick={stopRecording}
+                    className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full shadow-lg transition-all font-medium"
+                  >
+                    Stop Recording
+                  </button>
+                </>
+              ) : isTranscribing ? (
+                <div className={`${cardBg} border ${borderColor} rounded-full px-6 py-4 shadow-lg flex items-center gap-2`}>
+                  <Loader2 size={20} className="animate-spin text-blue-500" />
+                  <span className="text-sm font-medium">
+                    {modelLoadProgress !== null ? `Loading model... ${modelLoadProgress}%` : 'Transcribing...'}
+                  </span>
+                </div>
+              ) : (
+                <button
+                  onClick={() => startRecording('edit', true)}
+                  className={`${buttonBg} text-white px-6 py-4 rounded-full shadow-lg transition-all font-medium flex items-center justify-center gap-2`}
+                >
+                  <Mic size={20} />
+                  Resume Recording
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* LLM Loading Modal */}
         {showLlmLoadingModal && (
